@@ -6,7 +6,7 @@ Supports two modes:
 """
 
 from app.config import settings
-from app.routers import episodic, semantic, procedural, graph, rag
+from app.routers import episodic, semantic, procedural, graph, rag, auth, health
 
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
@@ -71,6 +71,8 @@ app.include_router(semantic.router, prefix="/api/v1")
 app.include_router(procedural.router, prefix="/api/v1")
 app.include_router(graph.router, prefix="/api/v1")
 app.include_router(rag.router, prefix="/api/v1")
+app.include_router(auth.router, prefix="/api/v1")
+app.include_router(health.router)
 
 
 @app.get("/")

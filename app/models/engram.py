@@ -1,58 +1,48 @@
-"""Engram ORM model — compressed, embedded memory units — Day 2/4."""
+"""Engram ORM model — Day 4."""
 
 import uuid
 from datetime import datetime
+from typing import Optional, List
 
-from sqlalchemy import (
-    Column, DateTime, Float, Integer, JSON, String,
-)
+from sqlalchemy import Column, String, Text, Float, Integer, DateTime, JSON
 from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import Mapped, mapped_column
 from pgvector.sqlalchemy import Vector
 
 from app.database import Base
 
 
 class Engram(Base):
-    """
-    A distilled, semantically-compressed memory unit.
-    Produced by EngramProcessor after ingesting raw text.
-    """
+    """Compressed memory unit produced by EngramProcessor."""
 
     __tablename__ = "engrams"
 
-    # --- Identity ---
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id = Column(UUID(as_uuid=True), nullable=False, index=True)
-
-    # Short fingerprint used for graph edge references (e.g. "a1b2c3d4e5f6")
-    engram_id = Column(String(12), nullable=False, index=True)
-
-    # --- Compressed text & embedding ---
-    distilled_text = Column(String, nullable=False)
-    # 384-dim vector from all-MiniLM-L6-v2 (filled in Day 4)
-    dense_embedding = Column(Vector(384), nullable=True)
-
-    # --- NLP extractions ---
-    actions = Column(JSON, default=list)          # verbs (may include NOT_verb)
-    objects = Column(JSON, default=list)          # noun objects
-    entities = Column(JSON, default=list)         # named entities
-    negated_actions = Column(JSON, default=list)  # verbs under negation
-
-    # --- Scoring ---
-    salience_scores = Column(JSON, default=dict)  # token → score map
-    connections = Column(JSON, default=list)      # list of related engram_ids
-
-    # --- Compression stats ---
-    original_length = Column(Integer, nullable=True)
-    compressed_length = Column(Integer, nullable=True)
-    compression_ratio = Column(Float, nullable=True)
-
-    # --- Provenance ---
-    source_type = Column(String, nullable=True)   # e.g. "episodic", "api", "rag"
-
-    # --- Timestamps ---
-    created_at = Column(
-        DateTime(timezone=True), default=datetime.utcnow,
-        nullable=False, index=True
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
-    last_accessed_at = Column(DateTime(timezone=True), nullable=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False, index=True
+    )
+    engram_id: Mapped[str] = mapped_column(
+        String(12), nullable=False, index=True
+    )
+    distilled_text: Mapped[str] = mapped_column(Text, nullable=False)
+    dense_embedding: Mapped[Optional[List[float]]] = mapped_column(
+        Vector(384), nullable=True
+    )
+    actions: Mapped[List[str]] = mapped_column(JSON, default=list)
+    objects: Mapped[List[str]] = mapped_column(JSON, default=list)
+    entities: Mapped[List[str]] = mapped_column(JSON, default=list)
+    negated_actions: Mapped[List[str]] = mapped_column(JSON, default=list)
+    salience_scores: Mapped[dict] = mapped_column(JSON, default=dict)
+    connections: Mapped[List[str]] = mapped_column(JSON, default=list)
+    original_length: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    compressed_length: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    compression_ratio: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    source_type: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=datetime.utcnow, index=True
+    )
+    last_accessed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )

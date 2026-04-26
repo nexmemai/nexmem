@@ -31,8 +31,8 @@ if config.config_file_name is not None:
 # Target metadata for --autogenerate
 target_metadata = Base.metadata
 
-# Override the sqlalchemy.url with the real URL from settings
-config.set_main_option("sqlalchemy.url", settings.database_url)
+# Override the sqlalchemy.url with the real URL from settings (escape % for configparser)
+config.set_main_option("sqlalchemy.url", settings.database_url.replace("%", "%%"))
 
 
 # ── offline mode (generates SQL without connecting) ───────────────────────────

@@ -14,6 +14,16 @@ from pgvector.sqlalchemy import Vector
 
 from app.database import Base
 
+# ── shared column helpers ──────────────────────────────────────────────────────
+
+def _user_id_col():
+    """Standard user_id FK column — UUID, indexed, required."""
+    return Column(UUID(as_uuid=True), nullable=False, index=True)
+
+def _app_id_col():
+    """Optional app_id for multi-app memory scoping."""
+    return Column(UUID(as_uuid=True), nullable=True, index=True)
+
 
 class EpisodicMemory(Base):
     """Episodic memory: time-stamped conversation history."""
@@ -23,13 +33,16 @@ class EpisodicMemory(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
-    user_id: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    user_id = _user_id_col()
+    app_id  = _app_id_col()
     session_id: Mapped[str] = mapped_column(Text, nullable=False)
     timestamp: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=datetime.utcnow
     )
     content: Mapped[str] = mapped_column(Text, nullable=False)
-    metadata: Mapped[dict] = mapped_column(JSONB, default=dict)
+    # NOTE: column name stays 'metadata' in DB; attribute renamed to avoid
+    # conflict with SQLAlchemy's reserved DeclarativeBase.metadata attribute
+    extra_metadata: Mapped[dict] = mapped_column("metadata", JSONB, default=dict)
     tags: Mapped[Optional[List[str]]] = mapped_column(ARRAY(Text), default=list)
     store_episodic: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True
@@ -56,7 +69,8 @@ class SemanticMemory(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
-    user_id: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    user_id = _user_id_col()
+    app_id  = _app_id_col()
     episodic_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("episodic_memory.id", ondelete="SET NULL"),
@@ -68,7 +82,7 @@ class SemanticMemory(Base):
     )
     summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     content_preview: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    metadata: Mapped[dict] = mapped_column(JSONB, default=dict)
+    extra_metadata: Mapped[dict] = mapped_column("metadata", JSONB, default=dict)
     index_semantic: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True
     )
@@ -88,9 +102,8 @@ class ProceduralMemory(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
-    user_id: Mapped[str] = mapped_column(
-        Text, nullable=False, unique=True, index=True
-    )
+    # unique=True: one procedural profile per user
+    user_id = Column(UUID(as_uuid=True), nullable=False, unique=True, index=True)
     settings: Mapped[dict] = mapped_column(JSONB, default=dict)
     workflows: Mapped[dict] = mapped_column(JSONB, default=list)
     store_procedural: Mapped[bool] = mapped_column(
@@ -113,7 +126,8 @@ class KnowledgeNode(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
-    user_id: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    user_id = _user_id_col()
+    app_id  = _app_id_col()
     label: Mapped[str] = mapped_column(Text, nullable=False)
     type: Mapped[str] = mapped_column(Text, nullable=False)
     properties: Mapped[dict] = mapped_column(JSONB, default=dict)
@@ -147,7 +161,7 @@ class KnowledgeEdge(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
-    user_id: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    user_id = _user_id_col()
     from_node_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("knowledge_nodes.id", ondelete="CASCADE"),
@@ -160,7 +174,7 @@ class KnowledgeEdge(Base):
     )
     relation: Mapped[str] = mapped_column(Text, nullable=False)
     weight: Mapped[float] = mapped_column(Float, default=1.0)
-    metadata: Mapped[dict] = mapped_column(JSONB, default=dict)
+    extra_metadata: Mapped[dict] = mapped_column("metadata", JSONB, default=dict)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=datetime.utcnow
     )
