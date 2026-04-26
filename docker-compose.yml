@@ -1,0 +1,65 @@
+# Docker Compose for AI Memory Layer - Local Development
+# Run with: docker-compose up --build
+
+version: '3.8'
+
+services:
+  # PostgreSQL with pgvector (local alternative to Supabase)
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: memorylayer-postgres
+    environment:
+      POSTGRES_DB: memory_layer
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./supabase/migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # FastAPI Backend
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: memorylayer-backend
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/memory_layer
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-sk-placeholder}
+      OPENAI_EMBEDDING_MODEL: text-embedding-3-small
+      OPENAI_LLM_MODEL: gpt-4o
+      MEMORY_DECAY_DAYS: 30
+      DEBUG: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./app:/app/app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  # Streamlit Frontend
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: memorylayer-frontend
+    ports:
+      - "8501:8501"
+    environment:
+      API_BASE_URL: http://backend:8000
+    depends_on:
+      - backend
+    volumes:
+      - ./frontend:/app
+    command: streamlit run app.py --server.port 8501 --server.address 0.0.0.0
+
+volumes:
+  postgres_data:
