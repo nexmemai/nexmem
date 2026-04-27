@@ -21,6 +21,7 @@ CREATE EXTENSION IF NOT EXISTS "pg_trgm";  -- For fuzzy text search on graph lab
 CREATE TABLE IF NOT EXISTS episodic_memory (
     id              UUID        NOT NULL DEFAULT uuid_generate_v4(),
     user_id         UUID        NOT NULL,
+    app_id          UUID        DEFAULT NULL,
     session_id      TEXT        NOT NULL,
     timestamp       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     content         TEXT        NOT NULL,
@@ -34,6 +35,8 @@ CREATE TABLE IF NOT EXISTS episodic_memory (
 -- Indexes for fast retrieval by user + time range
 CREATE INDEX IF NOT EXISTS idx_episodic_user_id
     ON episodic_memory (user_id);
+CREATE INDEX IF NOT EXISTS idx_episodic_app_id
+    ON episodic_memory (app_id);
 CREATE INDEX IF NOT EXISTS idx_episodic_timestamp
     ON episodic_memory (timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_episodic_user_session
@@ -52,7 +55,8 @@ COMMENT ON TABLE episodic_memory IS
 
 CREATE TABLE IF NOT EXISTS semantic_memory (
     id               UUID        NOT NULL DEFAULT uuid_generate_v4(),
-    user_id          TEXT        NOT NULL,
+    user_id          UUID        NOT NULL,
+    app_id           UUID        DEFAULT NULL,
     episodic_id      UUID        REFERENCES episodic_memory(id)
                                  ON DELETE SET NULL,
     vector           VECTOR(1536) NOT NULL,
@@ -74,6 +78,9 @@ CREATE INDEX IF NOT EXISTS idx_semantic_vector
 CREATE INDEX IF NOT EXISTS idx_semantic_user_id
     ON semantic_memory (user_id);
 
+CREATE INDEX IF NOT EXISTS idx_semantic_app_id
+    ON semantic_memory (app_id);
+
 COMMENT ON TABLE semantic_memory IS
     'Semantic memory: 1536-dim vector embeddings via text-embedding-3-small. '
     'Never auto-deleted; manual removal only.';
@@ -87,7 +94,7 @@ COMMENT ON TABLE semantic_memory IS
 
 CREATE TABLE IF NOT EXISTS procedural_memory (
     id                UUID        NOT NULL DEFAULT uuid_generate_v4(),
-    user_id           TEXT        NOT NULL UNIQUE,
+    user_id           UUID        NOT NULL UNIQUE,
     settings          JSONB       DEFAULT '{}',
     workflows         JSONB       DEFAULT '[]',
     store_procedural  BOOLEAN     NOT NULL DEFAULT TRUE,
@@ -111,7 +118,8 @@ COMMENT ON TABLE procedural_memory IS
 
 CREATE TABLE IF NOT EXISTS knowledge_nodes (
     id                UUID        NOT NULL DEFAULT uuid_generate_v4(),
-    user_id           TEXT        NOT NULL,
+    user_id           UUID        NOT NULL,
+    app_id            UUID        DEFAULT NULL,
     label             TEXT        NOT NULL,
     type              TEXT        NOT NULL,
     properties        JSONB       DEFAULT '{}',
@@ -122,6 +130,8 @@ CREATE TABLE IF NOT EXISTS knowledge_nodes (
 
 CREATE INDEX IF NOT EXISTS idx_knowledge_node_user_id
     ON knowledge_nodes (user_id);
+CREATE INDEX IF NOT EXISTS idx_knowledge_node_app_id
+    ON knowledge_nodes (app_id);
 CREATE INDEX IF NOT EXISTS idx_knowledge_node_label
     ON knowledge_nodes USING gin (label gin_trgm_ops);
 CREATE INDEX IF NOT EXISTS idx_knowledge_node_type
@@ -130,7 +140,7 @@ CREATE INDEX IF NOT EXISTS idx_knowledge_node_type
 
 CREATE TABLE IF NOT EXISTS knowledge_edges (
     id                UUID        NOT NULL DEFAULT uuid_generate_v4(),
-    user_id           TEXT        NOT NULL,
+    user_id           UUID        NOT NULL,
     from_node_id      UUID        NOT NULL
                                  REFERENCES knowledge_nodes(id)
                                  ON DELETE CASCADE,

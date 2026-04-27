@@ -2,6 +2,9 @@
 
 Note: Only run this after you have >1000 vectors.
 HNSW is better for continuous insertion patterns.
+
+Run with:
+    alembic upgrade head
 """
 
 from typing import Sequence, Union
@@ -17,12 +20,12 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     """Drop IVFFlat if exists, add HNSW index."""
-    op.execute("DROP INDEX IF EXISTS idx_semantic_memory_embedding")
+    op.execute("DROP INDEX IF EXISTS idx_semantic_vector")
 
     op.execute("""
         CREATE INDEX idx_semantic_memory_hnsw
         ON semantic_memory
-        USING hnsw (embedding vector_cosine_ops)
+        USING hnsw (vector vector_cosine_ops)
         WITH (m = 16, ef_construction = 64)
     """)
 
@@ -30,3 +33,9 @@ def upgrade() -> None:
 def downgrade() -> None:
     """Remove HNSW index."""
     op.execute("DROP INDEX IF EXISTS idx_semantic_memory_hnsw")
+
+    op.execute("""
+        CREATE INDEX idx_semantic_vector
+        ON semantic_memory USING ivfflat (vector vector_cosine_ops)
+        WITH (lists = 100)
+    """)

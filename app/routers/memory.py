@@ -1,17 +1,16 @@
 """Memory router - Unified context API and episode write endpoint."""
 
 from typing import Optional, List, Dict, Any
-from uuid import UUID
-from fastapi import APIRouter, Depends, Body
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import text
 
 from app.database import get_db
 from app.models.user import User
 from app.core.deps import get_current_user
 from app.services.embedder import EmbeddingService
 from app.services.engram_processor import engram_processor, decay_score
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, text
 
 router = APIRouter(prefix="/memory", tags=["memory"])
 
@@ -70,7 +69,6 @@ def assemble_context(
         tokens_used += len(context_text.split())
 
     if semantic_hits and tokens_used < max_tokens:
-        remaining = max_tokens - tokens_used
         parts.append("[Semantic Memory]")
         for hit in semantic_hits[:3]:
             if tokens_used >= max_tokens:
@@ -81,7 +79,6 @@ def assemble_context(
                 tokens_used += len(preview.split())
 
     if recent_episodes and tokens_used < max_tokens:
-        remaining = max_tokens - tokens_used
         parts.append("[Recent Episodes]")
         for ep in recent_episodes[:3]:
             if tokens_used >= max_tokens:
@@ -93,16 +90,15 @@ def assemble_context(
                 tokens_used += len(content.split())
 
     if preferences and tokens_used < max_tokens:
-        remaining = max_tokens - tokens_used
-        settings_str = ", ".join(
-            f"{k}={v}" for k, v in list(preferences.get("settings", {}).items())[:5]
-        )
-        if settings_str:
+        settings_dict = preferences.get("settings", {})
+        if settings_dict:
+            settings_str = ", ".join(
+                f"{k}={v}" for k, v in list(settings_dict.items())[:5]
+            )
             parts.append(f"[Preferences]\n{settings_str}")
             tokens_used += len(settings_str.split())
 
     if graph_context and tokens_used < max_tokens:
-        remaining = max_tokens - tokens_used
         entities = graph_context.get("entities", [])[:5]
         if entities:
             parts.append(f"[Related Entities]\n{', '.join(entities)}")
@@ -127,23 +123,25 @@ async def get_memory_context(
     engram_context = engram_processor.get_compressed_context(body.query, user_id)
 
     embedding_service = EmbeddingService()
+    query_embedding = None
     try:
         query_embedding = await embedding_service.embed(body.query)
     except Exception:
-        query_embedding = None
+        pass
 
     semantic_hits = []
     if query_embedding:
+        embedding_str = "[" + ",".join(str(x) for x in query_embedding) + "]"
         result = await db.execute(
             text("""
                 SELECT id, content_preview, metadata,
-                       1 - (embedding <=> :vec::vector) as similarity
+                       1 - (vector <=> :vec::vector) as similarity
                 FROM semantic_memory
                 WHERE user_id = :uid
-                ORDER BY embedding <=> :vec::vector
+                ORDER BY vector <=> :vec::vector
                 LIMIT :k
             """),
-            {"vec": str(query_embedding), "uid": user_id, "k": body.semantic_top_k}
+            {"vec": embedding_str, "uid": user_id, "k": body.semantic_top_k}
         )
         rows = result.fetchall()
         semantic_hits = [
@@ -175,7 +173,7 @@ async def get_memory_context(
             "id": str(row[0]),
             "content": row[1],
             "created_at": created_at.isoformat() if created_at else None,
-            "metadata": row[3],
+            "metadata": row[3] or {},
             "decay_score": round(decay, 3),
         })
 
@@ -243,8 +241,8 @@ async def write_episode(
 
     result = await db.execute(
         text("""
-            INSERT INTO episodic_memory (user_id, session_id, content, metadata, tags)
-            VALUES (:uid, :session, :content, :meta, :tags)
+            INSERT INTO episodic_memory (user_id, session_id, content, metadata, tags, app_id)
+            VALUES (:uid, :session, :content, :meta, :tags, :app_id)
             RETURNING id
         """),
         {
@@ -253,6 +251,7 @@ async def write_episode(
             "content": body.content,
             "meta": body.metadata,
             "tags": body.tags,
+            "app_id": body.app_id,
         }
     )
     row = result.fetchone()
@@ -261,18 +260,20 @@ async def write_episode(
     embedding_service = EmbeddingService()
     try:
         embedding = await embedding_service.embed(body.content)
+        embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
         result = await db.execute(
             text("""
-                INSERT INTO semantic_memory (user_id, episodic_id, vector, content_preview, metadata)
-                VALUES (:uid, :epi_id, :vec, :preview, :meta)
+                INSERT INTO semantic_memory (user_id, episodic_id, vector, content_preview, metadata, app_id)
+                VALUES (:uid, :epi_id, :vec::vector, :preview, :meta, :app_id)
                 RETURNING id
             """),
             {
                 "uid": user_id,
                 "epi_id": episodic_id,
-                "vec": str(embedding),
+                "vec": embedding_str,
                 "preview": body.content[:200],
                 "meta": body.metadata,
+                "app_id": body.app_id,
             }
         )
         row = result.fetchone()
@@ -284,13 +285,19 @@ async def write_episode(
     engram_id = engram.get("engram_id")
 
     try:
+        dense_embedding = engram.get("dense_embedding", [])
+        if dense_embedding:
+            embedding_str = "[" + ",".join(str(x) for x in dense_embedding) + "]"
+        else:
+            embedding_str = None
+
         result = await db.execute(
             text("""
                 INSERT INTO engrams (user_id, engram_id, distilled_text, dense_embedding,
                                      actions, objects, entities, negated_actions,
                                      salience_scores, connections, original_length,
                                      compressed_length, compression_ratio, source_type)
-                VALUES (:uid, :eid, :text, :emb, :actions, :objects, :entities,
+                VALUES (:uid, :eid, :text, :emb::vector, :actions, :objects, :entities,
                         :neg_actions, :salience, :conn, :orig_len, :comp_len, :ratio, 'episodic')
                 RETURNING id
             """),
@@ -298,7 +305,7 @@ async def write_episode(
                 "uid": user_id,
                 "eid": engram_id,
                 "text": engram.get("distilled_text", ""),
-                "emb": str(engram.get("dense_embedding", [])),
+                "emb": embedding_str,
                 "actions": engram.get("actions", []),
                 "objects": engram.get("objects", []),
                 "entities": engram.get("entities", []),
@@ -310,14 +317,14 @@ async def write_episode(
                 "ratio": engram.get("compression_ratio", 0.0),
             }
         )
-    except Exception:
+    except Exception as e:
         pass
 
     for entity in engram.get("entities", []):
         result = await db.execute(
             text("""
-                INSERT INTO knowledge_nodes (user_id, label, type, properties, store_associative)
-                VALUES (:uid, :label, 'entity', :props, true)
+                INSERT INTO knowledge_nodes (user_id, label, type, properties, store_associative, app_id)
+                VALUES (:uid, :label, 'entity', :props, true, :app_id)
                 ON CONFLICT DO NOTHING
                 RETURNING id
             """),
@@ -325,6 +332,7 @@ async def write_episode(
                 "uid": user_id,
                 "label": entity,
                 "props": {"source": "engram", "engram_id": engram_id},
+                "app_id": body.app_id,
             }
         )
         if result.fetchone():
@@ -336,7 +344,7 @@ async def write_episode(
         engram_id=engram_id,
         nodes_created=nodes_created,
         edges_created=edges_created,
-        message=f"Stored in all 5 memory sources. {nodes_created} entities extracted.",
+        message=f"Stored in all memory sources. {nodes_created} entities extracted.",
     )
 
 
