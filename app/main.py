@@ -6,11 +6,16 @@ Supports two modes:
 """
 
 from app.config import settings
-from app.routers import episodic, semantic, procedural, graph, rag, auth, health
+from app.routers import episodic, semantic, procedural, graph, rag, auth, health, memory
 
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+import time
+import logging
+import uuid
+
+logger = logging.getLogger("ai_memory")
 
 
 @asynccontextmanager
@@ -65,6 +70,20 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    """Log all HTTP requests with method, path, status, and duration."""
+    request_id = str(uuid.uuid4())[:8]
+    start = time.time()
+    response = await call_next(request)
+    duration_ms = round((time.time() - start) * 1000)
+    logger.info(
+        f"[{request_id}] {request.method} {request.url.path} "
+        f"-> {response.status_code} ({duration_ms}ms)"
+    )
+    return response
+
 # Include routers
 app.include_router(episodic.router, prefix="/api/v1")
 app.include_router(semantic.router, prefix="/api/v1")
@@ -73,6 +92,7 @@ app.include_router(graph.router, prefix="/api/v1")
 app.include_router(rag.router, prefix="/api/v1")
 app.include_router(auth.router, prefix="/api/v1")
 app.include_router(health.router)
+app.include_router(memory.router, prefix="/api/v1")
 
 
 @app.get("/")
