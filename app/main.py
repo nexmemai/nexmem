@@ -7,6 +7,7 @@ Supports two modes:
 
 from app.config import settings
 from app.routers import episodic, semantic, procedural, graph, rag, auth, health, memory
+from app.core.rate_limit import RateLimitMiddleware
 
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
@@ -60,6 +61,9 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+# Rate limiting middleware (60 req/min per IP)
+app.add_middleware(RateLimitMiddleware, requests_per_minute=60)
 
 # CORS middleware for frontend access
 app.add_middleware(
