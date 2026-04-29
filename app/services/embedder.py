@@ -90,3 +90,4 @@ class Embedder:
 
 # Global embedder instance
 embedder = Embedder()
+EmbeddingService = Embedder

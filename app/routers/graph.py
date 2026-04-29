@@ -3,8 +3,9 @@
 from collections import deque
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
-
+from fastapi import APIRouter, HTTPException, Query, Depends
+from sqlalchemy.ext.asyncio import AsyncSession
+from app.database import get_db
 from app.config import settings
 
 router = APIRouter(prefix="/agents", tags=["associative"])
@@ -20,30 +21,29 @@ async def create_node(
     label: str,
     type: str,
     properties: dict = {},
+    db: AsyncSession = Depends(get_db),
 ):
     """Create a new knowledge graph node."""
     if settings.demo_mode:
         from app.demo_db import create_node as demo_create_node
         return demo_create_node(user_id, label, type, properties)
 
-    from app.database import get_db
     from app.models.memory import KnowledgeNode
 
-    async for db in get_db():
-        record = KnowledgeNode(
-            user_id=user_id, label=label, type=type,
-            properties=properties, store_associative=True,
-        )
-        db.add(record)
-        await db.commit()
-        await db.refresh(record)
-        return {
-            "id": str(record.id), "user_id": record.user_id,
-            "label": record.label, "type": record.type,
-            "properties": record.properties,
-            "store_associative": record.store_associative,
-            "created_at": record.created_at.isoformat(),
-        }
+    record = KnowledgeNode(
+        user_id=user_id, label=label, type=type,
+        properties=properties, store_associative=True,
+    )
+    db.add(record)
+    await db.commit()
+    await db.refresh(record)
+    return {
+        "id": str(record.id), "user_id": str(record.user_id),
+        "label": record.label, "type": record.type,
+        "properties": record.properties,
+        "store_associative": record.store_associative,
+        "created_at": record.created_at.isoformat(),
+    }
 
 
 @router.get("/{user_id}/graph/nodes")
@@ -51,36 +51,35 @@ async def list_nodes(
     user_id: str,
     node_type: Optional[str] = Query(None),
     limit: int = Query(default=100, ge=1, le=500),
+    db: AsyncSession = Depends(get_db),
 ):
     """List knowledge graph nodes for a user."""
     if settings.demo_mode:
         from app.demo_db import get_nodes
         return get_nodes(user_id, node_type=node_type, limit=limit)
 
-    from app.database import get_db
     from app.models.memory import KnowledgeNode
     from sqlalchemy import select
 
-    async for db in get_db():
-        query = (
-            select(KnowledgeNode)
-            .where(KnowledgeNode.user_id == user_id)
-            .where(KnowledgeNode.store_associative == True)
-        )
-        if node_type:
-            query = query.where(KnowledgeNode.type == node_type)
-        query = query.limit(limit)
-        result = await db.execute(query)
-        records = result.scalars().all()
-        return [
-            {
-                "id": str(r.id), "user_id": r.user_id, "label": r.label,
-                "type": r.type, "properties": r.properties,
-                "store_associative": r.store_associative,
-                "created_at": r.created_at.isoformat(),
-            }
-            for r in records
-        ]
+    query = (
+        select(KnowledgeNode)
+        .where(KnowledgeNode.user_id == user_id)
+        .where(KnowledgeNode.store_associative == True)
+    )
+    if node_type:
+        query = query.where(KnowledgeNode.type == node_type)
+    query = query.limit(limit)
+    result = await db.execute(query)
+    records = result.scalars().all()
+    return [
+        {
+            "id": str(r.id), "user_id": str(r.user_id), "label": r.label,
+            "type": r.type, "properties": r.properties,
+            "store_associative": r.store_associative,
+            "created_at": r.created_at.isoformat(),
+        }
+        for r in records
+    ]
 
 
 @router.delete("/{user_id}/graph/nodes/{node_id}")
@@ -122,6 +121,7 @@ async def create_edge(
     relation: str,
     weight: float = 1.0,
     metadata: dict = {},
+    db: AsyncSession = Depends(get_db),
 ):
     """Create a new knowledge graph edge."""
     if settings.demo_mode:
@@ -133,33 +133,31 @@ async def create_edge(
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
 
-    from app.database import get_db
     from app.models.memory import KnowledgeEdge, KnowledgeNode
 
-    async for db in get_db():
-        from_node = await db.get(KnowledgeNode, from_node_id)
-        to_node = await db.get(KnowledgeNode, to_node_id)
-        if not from_node or not to_node:
-            raise HTTPException(status_code=404, detail="One or both nodes not found")
-        if from_node.user_id != user_id or to_node.user_id != user_id:
-            raise HTTPException(status_code=403, detail="Nodes do not belong to this user")
-        if from_node_id == to_node_id:
-            raise HTTPException(status_code=400, detail="Self-loops are not allowed")
+    from_node = await db.get(KnowledgeNode, from_node_id)
+    to_node = await db.get(KnowledgeNode, to_node_id)
+    if not from_node or not to_node:
+        raise HTTPException(status_code=404, detail="One or both nodes not found")
+    if str(from_node.user_id) != str(user_id) or str(to_node.user_id) != str(user_id):
+        raise HTTPException(status_code=403, detail="Nodes do not belong to this user")
+    if from_node_id == to_node_id:
+        raise HTTPException(status_code=400, detail="Self-loops are not allowed")
 
-        record = KnowledgeEdge(
-            user_id=user_id, from_node_id=from_node_id, to_node_id=to_node_id,
-            relation=relation, weight=weight, metadata=metadata,
-        )
-        db.add(record)
-        await db.commit()
-        await db.refresh(record)
-        return {
-            "id": str(record.id), "user_id": record.user_id,
-            "from_node_id": str(record.from_node_id),
-            "to_node_id": str(record.to_node_id),
-            "relation": record.relation, "weight": record.weight,
-            "metadata": record.metadata, "created_at": record.created_at.isoformat(),
-        }
+    record = KnowledgeEdge(
+        user_id=user_id, from_node_id=from_node_id, to_node_id=to_node_id,
+        relation=relation, weight=weight, extra_metadata=metadata,
+    )
+    db.add(record)
+    await db.commit()
+    await db.refresh(record)
+    return {
+        "id": str(record.id), "user_id": str(record.user_id),
+        "from_node_id": str(record.from_node_id),
+        "to_node_id": str(record.to_node_id),
+        "relation": record.relation, "weight": record.weight,
+        "metadata": record.extra_metadata, "created_at": record.created_at.isoformat(),
+    }
 
 
 @router.get("/{user_id}/graph/edges")
@@ -167,34 +165,33 @@ async def list_edges(
     user_id: str,
     node_id: Optional[str] = Query(None),
     limit: int = Query(default=200, ge=1, le=1000),
+    db: AsyncSession = Depends(get_db),
 ):
     """List knowledge graph edges for a user."""
     if settings.demo_mode:
         from app.demo_db import get_edges
         return get_edges(user_id, node_id=node_id, limit=limit)
 
-    from app.database import get_db
     from app.models.memory import KnowledgeEdge
     from sqlalchemy import select
 
-    async for db in get_db():
-        query = select(KnowledgeEdge).where(KnowledgeEdge.user_id == user_id)
-        if node_id:
-            query = query.where(
-                (KnowledgeEdge.from_node_id == node_id) | (KnowledgeEdge.to_node_id == node_id)
-            )
-        query = query.limit(limit)
-        result = await db.execute(query)
-        records = result.scalars().all()
-        return [
-            {
-                "id": str(r.id), "user_id": r.user_id,
-                "from_node_id": str(r.from_node_id), "to_node_id": str(r.to_node_id),
-                "relation": r.relation, "weight": r.weight,
-                "metadata": r.metadata, "created_at": r.created_at.isoformat(),
-            }
-            for r in records
-        ]
+    query = select(KnowledgeEdge).where(KnowledgeEdge.user_id == user_id)
+    if node_id:
+        query = query.where(
+            (KnowledgeEdge.from_node_id == node_id) | (KnowledgeEdge.to_node_id == node_id)
+        )
+    query = query.limit(limit)
+    result = await db.execute(query)
+    records = result.scalars().all()
+    return [
+        {
+            "id": str(r.id), "user_id": str(r.user_id),
+            "from_node_id": str(r.from_node_id), "to_node_id": str(r.to_node_id),
+            "relation": r.relation, "weight": r.weight,
+            "metadata": r.extra_metadata, "created_at": r.created_at.isoformat(),
+        }
+        for r in records
+    ]
 
 
 @router.post("/{user_id}/graph/path")

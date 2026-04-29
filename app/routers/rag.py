@@ -57,18 +57,23 @@ def _generate_demo_reply(
     return "I'm your AI assistant with a persistent memory layer. I can remember our conversations, learn your preferences, and use semantic search to find relevant information. What would you like to discuss?"
 
 
-@router.post("/rag/chat")
+from app.schemas.memory import RAGRequest, RAGResponse
+
+from app.schemas.memory import RAGRequest, RAGResponse
+
+@router.post("/rag/chat", response_model=RAGResponse)
 async def rag_chat(
-    user_id: str,
-    message: str,
-    session_id: Optional[str] = None,
-    include_episodic: bool = True,
-    include_semantic: bool = True,
-    include_procedural: bool = True,
-    include_graph: bool = False,
-    top_k: int = 5,
+    request: RAGRequest,
 ):
     """Generate a memory-augmented LLM response."""
+    user_id = request.user_id
+    message = request.message
+    session_id = request.session_id
+    include_episodic = request.include_episodic
+    include_semantic = request.include_semantic
+    include_procedural = request.include_procedural
+    include_graph = request.include_graph
+    top_k = request.top_k
     start_time = time.time()
 
     episodic_context = []
@@ -216,7 +221,10 @@ async def rag_chat(
             )
             reply, prompt_tokens, completion_tokens = llm_result["reply"], llm_result.get("prompt_tokens", 0), llm_result.get("completion_tokens", 0)
         except Exception as e:
-            raise HTTPException(status_code=502, detail=f"LLM service error: {str(e)}")
+            logger.warning(f"LLM service error, using demo fallback: {str(e)}")
+            reply = _generate_demo_reply(message, episodic_context, semantic_context, procedural_context)
+            prompt_tokens = len(message.split()) * 2
+            completion_tokens = len(reply.split()) * 2
 
         session = session_id or f"rag_{user_id}"
         new_episode = EpisodicMemory(

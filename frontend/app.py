@@ -358,7 +358,7 @@ def api_post(endpoint: str, data: dict = None):
 # ==========================================
 
 if "user_id" not in st.session_state:
-    st.session_state.user_id = "demo_user"
+    st.session_state.user_id = "7e082e59-86b3-428f-a17a-e84480daf072"
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
@@ -603,20 +603,9 @@ with col_center:
                 """, unsafe_allow_html=True)
 
     # Chat input
-    st.markdown("<br>", unsafe_allow_html=True)
+    user_message = st.chat_input("Message with memory...")
 
-    col_input1, col_input2 = st.columns([4, 1])
-    with col_input1:
-        user_message = st.text_input(
-            "Message",
-            placeholder="Type your message... (e.g., 'What do you remember about my startup?')",
-            label_visibility="collapsed",
-            key="chat_input",
-        )
-    with col_input2:
-        send_button = st.button("\u27a4 Send", use_container_width=True)
-
-    if send_button and user_message:
+    if user_message:
         # Add user message to chat
         st.session_state.messages.append({"role": "user", "content": user_message})
 
@@ -655,8 +644,11 @@ with col_center:
             # Refresh recent memories
             load_recent_memories()
             load_stats()
-
-        st.rerun()
+            st.rerun()
+        else:
+            # If API failed, we still want to keep the user message but show error
+            st.error("Connection lost or backend error. Please try again.")
+            # Note: no rerun here so error persists
 
     # Quick Actions
     st.markdown("<br>", unsafe_allow_html=True)
