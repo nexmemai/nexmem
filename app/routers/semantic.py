@@ -28,6 +28,7 @@ async def create_semantic(
     summary: Optional[str] = None,
     embedding_model: str = "text-embedding-3-small",
     index_semantic: bool = True,
+    app_id: Optional[str] = Query(default=None, description="App ID for scoping"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -80,6 +81,12 @@ async def create_semantic(
         extra_metadata=metadata,
         index_semantic=index_semantic,
     )
+    # Add app_id if provided
+    if app_id:
+        try:
+            record.app_id = UUID(app_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid app_id format")
     db.add(record)
     await db.commit()
     await db.refresh(record)
@@ -91,6 +98,7 @@ async def semantic_search(
     user_id: str,
     query: str,
     k: int = Query(default=5, ge=1, le=50),
+    app_id: Optional[str] = Query(default=None, description="Filter by app ID"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -125,16 +133,30 @@ async def semantic_search(
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Embedding service error: {str(e)}")
     
-    sql = text("""
+    # Build SQL with optional app_id filter
+    sql_text = """
         SELECT id, summary, content_preview, metadata,
                1 - (vector <=> :query_vec::vector) AS similarity
         FROM semantic_memory
         WHERE user_id = :uid AND index_semantic = TRUE
+    """
+    params = {"query_vec": str(query_vector), "uid": str(current_user.id), "k": k}
+    
+    if app_id:
+        try:
+            sql_text += " AND app_id = :app_id"
+            params["app_id"] = UUID(app_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid app_id format")
+    
+    sql_text += """
         ORDER BY vector <=> :query_vec::vector
         LIMIT :k
-    """)
+    """
     
-    result = await db.execute(sql, {"query_vec": str(query_vector), "uid": str(current_user.id), "k": k})
+    sql = text(sql_text)
+    
+    result = await db.execute(sql, params)
     rows = result.fetchall()
 
     return [
@@ -153,6 +175,7 @@ async def semantic_search(
 async def list_semantics(
     user_id: str,
     limit: int = Query(default=50, ge=1, le=200),
+    app_id: Optional[str] = Query(default=None, description="Filter by app ID"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -178,15 +201,21 @@ async def list_semantics(
         ]
 
     from app.models.memory import SemanticMemory
-
-    result = await db.execute(
+    
+    query = (
         select(SemanticMemory)
         .where(SemanticMemory.user_id == str(current_user.id))
         .where(SemanticMemory.index_semantic == True)
-        .order_by(desc(SemanticMemory.created_at))
-        .limit(limit)
     )
-    records = result.scalars().all()
+    
+    # Filter by app_id if provided
+    if app_id:
+        try:
+            query = query.where(SemanticMemory.app_id == UUID(app_id))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid app_id format")
+    
+    query = query.order_by(desc(SemanticMemory.created_at)).limit(limit)
     return [
         {
             "id": str(r.id),
@@ -204,6 +233,7 @@ async def list_semantics(
 @router.get("/{user_id}/semantics/count")
 async def count_semantics(
     user_id: str,
+    app_id: Optional[str] = Query(default=None, description="Filter by app ID"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -218,11 +248,17 @@ async def count_semantics(
 
     from app.models.memory import SemanticMemory
     
-    result = await db.execute(
-        select(func.count()).where(
-            SemanticMemory.user_id == str(current_user.id),
-            SemanticMemory.index_semantic == True,
-        )
+    query = select(func.count()).where(
+        SemanticMemory.user_id == str(current_user.id),
+        SemanticMemory.index_semantic == True,
     )
-    count = result.scalar()
+    
+    # Filter by app_id if provided
+    if app_id:
+        try:
+            query = query.where(SemanticMemory.app_id == UUID(app_id))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid app_id format")
+    
+    count = await db.execute(query)
     return {"user_id": str(current_user.id), "count": count}

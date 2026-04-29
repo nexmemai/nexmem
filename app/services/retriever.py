@@ -25,6 +25,7 @@ async def hybrid_search(
     include_vector: bool = True,
     include_keyword: bool = True,
     include_graph: bool = True,
+    app_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Perform hybrid search across all memory types.
@@ -45,21 +46,21 @@ async def hybrid_search(
     # 1. Vector similarity search (semantic memories)
     if include_vector:
         try:
-            results["vector_results"] = await vector_search(db, user_id, query, top_k)
+            results["vector_results"] = await vector_search(db, user_id, query, top_k, app_id=app_id)
         except Exception as e:
             logger.warning(f"Vector search failed: {e}")
     
     # 2. Keyword search (episodic memories)
     if include_keyword:
         try:
-            results["keyword_results"] = await keyword_search(db, user_id, query, top_k)
+            results["keyword_results"] = await keyword_search(db, user_id, query, top_k, app_id=app_id)
         except Exception as e:
             logger.warning(f"Keyword search failed: {e}")
     
     # 3. Graph traversal (knowledge graph)
     if include_graph:
         try:
-            results["graph_results"] = await graph_search(db, user_id, query, top_k)
+            results["graph_results"] = await graph_search(db, user_id, query, top_k, app_id=app_id)
         except Exception as e:
             logger.warning(f"Graph search failed: {e}")
     
@@ -78,6 +79,7 @@ async def vector_search(
     user_id: str,
     query: str,
     k: int = 5,
+    app_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Search semantic memories using vector similarity."""
     try:
@@ -86,18 +88,30 @@ async def vector_search(
         logger.error(f"Embedding failed: {e}")
         return []
     
-    sql = text("""
+    # Build SQL with optional app_id filter
+    sql_text = """
         SELECT id, summary, content_preview, metadata,
                1 - (vector <=> :query_vec::vector) AS similarity
         FROM semantic_memory
         WHERE user_id = :uid AND index_semantic = TRUE
+    """
+    params = {"query_vec": str(query_vector), "uid": user_id, "k": k}
+    
+    if app_id:
+        try:
+            sql_text += " AND app_id = :app_id"
+            params["app_id"] = uuid.UUID(app_id)
+        except ValueError:
+            logger.warning(f"Invalid app_id format: {app_id}")
+    
+    sql_text += """
         ORDER BY vector <=> :query_vec::vector
         LIMIT :k
-    """)
+    """
     
-    result = await db.execute(
-        sql, {"query_vec": str(query_vector), "uid": user_id, "k": k}
-    )
+    sql = text(sql_text)
+    
+    result = await db.execute(sql, params)
     rows = result.fetchall()
     
     return [
@@ -119,6 +133,7 @@ async def keyword_search(
     user_id: str,
     query: str,
     k: int = 5,
+    app_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Search episodic memories using keyword matching."""
     # Extract keywords from query
@@ -138,17 +153,30 @@ async def keyword_search(
     
     where_clause = " OR ".join(conditions)
     
-    sql = text(f"""
+    # Build SQL with optional app_id filter
+    sql_text = f"""
         SELECT id, content, timestamp, metadata, tags,
                ts_rank_cd(to_tsvector('english', content), 
                           plainto_tsquery('english', :query)) AS rank
         FROM episodic_memory
         WHERE user_id = :uid AND store_episodic = TRUE
           AND ({where_clause})
+    """
+    
+    # Add app_id filter if provided
+    if app_id:
+        try:
+            sql_text += " AND app_id = :app_id"
+            params["app_id"] = uuid.UUID(app_id)
+        except ValueError:
+            logger.warning(f"Invalid app_id format: {app_id}")
+    
+    sql_text += """
         ORDER BY rank DESC, timestamp DESC
         LIMIT :k
-    """)
+    """
     
+    sql = text(sql_text)
     params["query"] = query
     
     try:
@@ -171,7 +199,7 @@ async def keyword_search(
     except Exception as e:
         logger.warning(f"Full-text search failed, falling back to ILIKE: {e}")
         # Fallback to simple ILIKE
-        return await keyword_search_simple(db, user_id, query, k)
+        return await keyword_search_simple(db, user_id, query, k, app_id=app_id)
 
 
 async def keyword_search_simple(
@@ -179,6 +207,7 @@ async def keyword_search_simple(
     user_id: str,
     query: str,
     k: int = 5,
+    app_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Simple keyword search using ILIKE (fallback)."""
     keywords = [w.strip() for w in query.split() if len(w.strip()) > 3]
@@ -196,14 +225,27 @@ async def keyword_search_simple(
     
     where_clause = " OR ".join(conditions)
     
-    sql = text(f"""
+    sql_text = f"""
         SELECT id, content, timestamp, metadata, tags
         FROM episodic_memory
         WHERE user_id = :uid AND store_episodic = TRUE
           AND ({where_clause})
+    """
+    
+    # Add app_id filter if provided
+    if app_id:
+        try:
+            sql_text += " AND app_id = :app_id"
+            params["app_id"] = uuid.UUID(app_id)
+        except ValueError:
+            logger.warning(f"Invalid app_id format: {app_id}")
+    
+    sql_text += """
         ORDER BY timestamp DESC
         LIMIT :k
-    """)
+    """
+    
+    sql = text(sql_text)
     
     result = await db.execute(sql, params)
     rows = result.fetchall()
@@ -228,6 +270,7 @@ async def graph_search(
     user_id: str,
     query: str,
     k: int = 5,
+    app_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Search knowledge graph using query terms and traversal."""
     # Extract potential entity names from query
@@ -237,7 +280,7 @@ async def graph_search(
         return []
     
     # 1. Find nodes with matching labels
-    result = await db.execute(
+    query_filter = (
         select(KnowledgeNode)
         .where(KnowledgeNode.user_id == user_id)
         .where(KnowledgeNode.store_associative == True)
@@ -245,8 +288,16 @@ async def graph_search(
             func.lower(KnowledgeNode.label).in_(query_terms)
             | func.lower(KnowledgeNode.label).like(f"%{query_terms[0]}%")
         )
-        .limit(k)
     )
+    
+    # Filter by app_id if provided
+    if app_id:
+        try:
+            query_filter = query_filter.where(KnowledgeNode.app_id == uuid.UUID(app_id))
+        except ValueError:
+            logger.warning(f"Invalid app_id format: {app_id}")
+    
+    result = await db.execute(query_filter.limit(k))
     matching_nodes = result.scalars().all()
     
     # 2. Traverse edges to find connected nodes (1-hop)
@@ -266,12 +317,20 @@ async def graph_search(
     
     if node_ids:
         # Get edges from matching nodes
-        edge_result = await db.execute(
+        edge_query = (
             select(KnowledgeEdge)
             .where(KnowledgeEdge.user_id == user_id)
             .where(KnowledgeEdge.from_node_id.in_(node_ids))
-            .limit(20)
         )
+        
+        # Filter by app_id if provided
+        if app_id:
+            try:
+                edge_query = edge_query.where(KnowledgeEdge.app_id == uuid.UUID(app_id))
+            except ValueError:
+                pass
+        
+        edge_result = await db.execute(edge_query.limit(20))
         edges = edge_result.scalars().all()
         
         # Add connected nodes
@@ -374,12 +433,13 @@ async def get_retrieval_context(
     user_id: str,
     query: str,
     top_k: int = 5,
+    app_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Get formatted context from hybrid retrieval for use in RAG.
     Returns episodic_context, semantic_context, and graph_context lists.
     """
-    results = await hybrid_search(db, user_id, query, top_k)
+    results = await hybrid_search(db, user_id, query, top_k, app_id=app_id)
     
     episodic_context = [
         r.get("content", "") for r in results["combined"]

@@ -179,10 +179,13 @@ async def rag_chat(
     from app.services.embedder import embedder
     from app.services.llm import llm_service
 
+    # Extract app_id from request
+    app_id = request.app_id
+    
     # Use hybrid retrieval
     try:
         retrieval_results = await get_retrieval_context(
-            db, user_id, message, top_k
+            db, user_id, message, top_k, app_id=app_id
         )
         episodic_context = retrieval_results["episodic_context"]
         semantic_context = retrieval_results["semantic_context"]

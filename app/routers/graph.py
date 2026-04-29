@@ -23,6 +23,7 @@ async def create_node(
     label: str,
     type: str,
     properties: dict = {},
+    app_id: Optional[str] = Query(default=None, description="App ID for scoping"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -36,11 +37,17 @@ async def create_node(
         return demo_create_node(str(current_user.id), label, type, properties)
 
     from app.models.memory import KnowledgeNode
-
+    
     record = KnowledgeNode(
         user_id=str(current_user.id), label=label, type=type,
         properties=properties, store_associative=True,
     )
+    # Add app_id if provided
+    if app_id:
+        try:
+            record.app_id = uuid.UUID(app_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid app_id format")
     db.add(record)
     await db.commit()
     await db.refresh(record)
@@ -58,6 +65,7 @@ async def list_nodes(
     user_id: str,
     node_type: Optional[str] = Query(None),
     limit: int = Query(default=100, ge=1, le=500),
+    app_id: Optional[str] = Query(default=None, description="Filter by app ID"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -72,14 +80,20 @@ async def list_nodes(
 
     from app.models.memory import KnowledgeNode
     from sqlalchemy import select
-
+    
     query = (
         select(KnowledgeNode)
-        .where(KnowledgeNode.user_id == user_id)
+        .where(KnowledgeNode.user_id == str(current_user.id))
         .where(KnowledgeNode.store_associative == True)
     )
     if node_type:
         query = query.where(KnowledgeNode.type == node_type)
+    # Filter by app_id if provided
+    if app_id:
+        try:
+            query = query.where(KnowledgeNode.app_id == uuid.UUID(app_id))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid app_id format")
     query = query.limit(limit)
     result = await db.execute(query)
     records = result.scalars().all()
@@ -133,6 +147,7 @@ async def create_edge(
     relation: str,
     weight: float = 1.0,
     metadata: dict = {},
+    app_id: Optional[str] = Query(default=None, description="App ID for scoping"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -165,6 +180,12 @@ async def create_edge(
         user_id=str(current_user.id), from_node_id=from_node_id, to_node_id=to_node_id,
         relation=relation, weight=weight, extra_metadata=metadata,
     )
+    # Add app_id if provided
+    if app_id:
+        try:
+            record.app_id = uuid.UUID(app_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid app_id format")
     db.add(record)
     await db.commit()
     await db.refresh(record)
@@ -182,6 +203,7 @@ async def list_edges(
     user_id: str,
     node_id: Optional[str] = Query(None),
     limit: int = Query(default=200, ge=1, le=1000),
+    app_id: Optional[str] = Query(default=None, description="Filter by app ID"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -196,12 +218,18 @@ async def list_edges(
 
     from app.models.memory import KnowledgeEdge
     from sqlalchemy import select
-
+    
     query = select(KnowledgeEdge).where(KnowledgeEdge.user_id == str(current_user.id))
     if node_id:
         query = query.where(
             (KnowledgeEdge.from_node_id == node_id) | (KnowledgeEdge.to_node_id == node_id)
         )
+    # Filter by app_id if provided
+    if app_id:
+        try:
+            query = query.where(KnowledgeEdge.app_id == uuid.UUID(app_id))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid app_id format")
     query = query.limit(limit)
     result = await db.execute(query)
     records = result.scalars().all()
@@ -282,6 +310,7 @@ async def find_path(
 @router.get("/{user_id}/graph/stats")
 async def get_graph_stats(
     user_id: str,
+    app_id: Optional[str] = Query(default=None, description="Filter by app ID"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -311,14 +340,22 @@ async def get_graph_stats(
 
     from app.models.memory import KnowledgeNode, KnowledgeEdge
     from sqlalchemy import select
-
-    nodes_result = await db.execute(
-        select(KnowledgeNode).where(KnowledgeNode.user_id == str(current_user.id))
-    )
+    
+    # Build queries with optional app_id filter
+    nodes_query = select(KnowledgeNode).where(KnowledgeNode.user_id == str(current_user.id))
+    edges_query = select(KnowledgeEdge).where(KnowledgeEdge.user_id == str(current_user.id))
+    
+    # Filter by app_id if provided
+    if app_id:
+        try:
+            nodes_query = nodes_query.where(KnowledgeNode.app_id == uuid.UUID(app_id))
+            edges_query = edges_query.where(KnowledgeEdge.app_id == uuid.UUID(app_id))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid app_id format")
+    
+    nodes_result = await db.execute(nodes_query)
     nodes = nodes_result.scalars().all()
-    edges_result = await db.execute(
-        select(KnowledgeEdge).where(KnowledgeEdge.user_id == str(current_user.id))
-    )
+    edges_result = await db.execute(edges_query)
     edges = edges_result.scalars().all()
 
     node_types = {}

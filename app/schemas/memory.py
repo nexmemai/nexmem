@@ -169,6 +169,7 @@ class RAGRequest(BaseModel):
     include_procedural: bool = True
     include_graph: bool = False
     top_k: int = Field(default=5, ge=1, le=20)
+    app_id: Optional[str] = Field(default=None, description="App ID for scoping")
 
 
 class RAGResponse(BaseModel):

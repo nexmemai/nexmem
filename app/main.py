@@ -6,7 +6,7 @@ Supports two modes:
 """
 
 from app.config import settings
-from app.routers import episodic, semantic, procedural, graph, rag, auth, health, memory
+from app.routers import episodic, semantic, procedural, graph, rag, auth, health, memory, apps
 from app.core.rate_limit import RateLimitMiddleware
 
 from contextlib import asynccontextmanager
@@ -105,6 +105,7 @@ app.include_router(rag.router, prefix="/api/v1")
 app.include_router(auth.router, prefix="/api/v1")
 app.include_router(health.router)
 app.include_router(memory.router, prefix="/api/v1")
+app.include_router(apps.router, prefix="/api/v1")
 
 
 @app.get("/")

@@ -25,6 +25,7 @@ async def create_episode(
     metadata: dict = {},
     tags: list[str] = [],
     store_episodic: bool = True,
+    app_id: Optional[str] = Query(default=None, description="App ID for scoping"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -35,7 +36,7 @@ async def create_episode(
     
     if not store_episodic:
         return {"id": None, "skipped": True, "reason": "store_episodic=false"}
-
+    
     if settings.demo_mode:
         from app.demo_db import create_episode as demo_create
         return demo_create(
@@ -46,9 +47,9 @@ async def create_episode(
             tags=tags,
             store_episodic=store_episodic,
         )
-
+    
     from app.models.memory import EpisodicMemory
-
+    
     record = EpisodicMemory(
         user_id=str(current_user.id),
         session_id=session_id,
@@ -58,6 +59,12 @@ async def create_episode(
         tags=tags,
         store_episodic=store_episodic,
     )
+    # Add app_id if provided
+    if app_id:
+        try:
+            record.app_id = UUID(app_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid app_id format")
     db.add(record)
     await db.commit()
     await db.refresh(record)
@@ -75,6 +82,7 @@ async def list_episodes(
     session_id: Optional[str] = Query(None),
     since: Optional[datetime] = Query(None),
     limit: int = Query(default=50, ge=1, le=200),
+    app_id: Optional[str] = Query(default=None, description="Filter by app ID"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -88,12 +96,20 @@ async def list_episodes(
         return get_episodic(user_id, limit=limit, session_id=session_id)
 
     from app.models.memory import EpisodicMemory
-
+    
     query = (
         select(EpisodicMemory)
         .where(EpisodicMemory.user_id == str(current_user.id))
         .where(EpisodicMemory.store_episodic == True)
     )
+    
+    # Filter by app_id if provided
+    if app_id:
+        try:
+            query = query.where(EpisodicMemory.app_id == UUID(app_id))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid app_id format")
+    
     if session_id:
         query = query.where(EpisodicMemory.session_id == session_id)
     if since:
