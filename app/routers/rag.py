@@ -10,6 +10,8 @@ from app.database import get_db
 from app.config import settings
 from app.core.deps import get_current_user
 from app.models.user import User
+from app.services.retriever import get_retrieval_context
+from app.services.reranker import get_top_context
 
 logger = logging.getLogger(__name__)
 
@@ -173,34 +175,57 @@ async def rag_chat(
         }
 
     # Production mode with PostgreSQL
-    from app.models.memory import EpisodicMemory, SemanticMemory, ProceduralMemory, KnowledgeNode
+    from app.models.memory import EpisodicMemory, ProceduralMemory
     from app.services.embedder import embedder
     from app.services.llm import llm_service
-    from sqlalchemy import select, text
 
-    if include_episodic:
-        result = await db.execute(
-            select(EpisodicMemory)
-            .where(EpisodicMemory.user_id == user_id)
-            .where(EpisodicMemory.store_episodic == True)
-            .order_by(EpisodicMemory.timestamp.desc())
-            .limit(10)
+    # Use hybrid retrieval
+    try:
+        retrieval_results = await get_retrieval_context(
+            db, user_id, message, top_k
         )
-        episodic_context = [ep.content for ep in result.scalars().all()]
-
-    if include_semantic:
-        try:
-            query_vector = embedder.embed(message)
-            sql = text("""
-                SELECT content_preview, summary FROM semantic_memory
-                WHERE user_id = :uid AND index_semantic = TRUE
-                ORDER BY vector <=> :query_vec::vector LIMIT :k
-            """)
-            result = await db.execute(sql, {"query_vec": str(query_vector), "uid": user_id, "k": top_k})
-            semantic_context = [row.summary or row.content_preview or "" for row in result.fetchall()]
-        except Exception as e:
-            logger.warning(f"Semantic search failed: {e}")
-
+        episodic_context = retrieval_results["episodic_context"]
+        semantic_context = retrieval_results["semantic_context"]
+        graph_context = retrieval_results["graph_context"]
+    except Exception as e:
+        logger.warning(f"Hybrid retrieval failed: {e}, falling back to basic search")
+        # Fallback to basic search
+        episodic_context = []
+        semantic_context = []
+        graph_context = []
+        
+        if include_episodic:
+            result = await db.execute(
+                select(EpisodicMemory)
+                .where(EpisodicMemory.user_id == user_id)
+                .where(EpisodicMemory.store_episodic == True)
+                .order_by(EpisodicMemory.timestamp.desc())
+                .limit(10)
+            )
+            episodic_context = [ep.content for ep in result.scalars().all()]
+        
+        if include_semantic:
+            try:
+                query_vector = embedder.embed(message)
+                sql = text("""
+                    SELECT content_preview, summary FROM semantic_memory
+                    WHERE user_id = :uid AND index_semantic = TRUE
+                    ORDER BY vector <=> :query_vec::vector LIMIT :k
+                """)
+                result = await db.execute(sql, {"query_vec": str(query_vector), "uid": user_id, "k": top_k})
+                semantic_context = [row.summary or row.content_preview or "" for row in result.fetchall()]
+            except Exception as e2:
+                logger.warning(f"Semantic search failed: {e2}")
+        
+        if include_graph:
+            result = await db.execute(
+                select(KnowledgeNode).where(
+                    KnowledgeNode.user_id == user_id, KnowledgeNode.store_associative == True
+                ).limit(10)
+            )
+            graph_context = [f"{n.label} ({n.type}): {n.properties.get('description', '')}" for n in result.scalars().all()]
+    
+    # Get procedural memory (separate from search)
     if include_procedural:
         result = await db.execute(
             select(ProceduralMemory).where(
@@ -211,14 +236,6 @@ async def rag_chat(
         proc = result.scalar_one_or_none()
         if proc:
             procedural_context = {"settings": proc.settings, "workflows": proc.workflows}
-
-    if include_graph:
-        result = await db.execute(
-            select(KnowledgeNode).where(
-                KnowledgeNode.user_id == user_id, KnowledgeNode.store_associative == True
-            ).limit(10)
-        )
-        graph_context = [f"{n.label} ({n.type}): {n.properties.get('description', '')}" for n in result.scalars().all()]
 
     try:
         llm_result = llm_service.generate_rag_response(
