@@ -10,6 +10,8 @@ from sqlalchemy import select, desc, func
 
 from app.database import get_db
 from app.config import settings
+from app.core.deps import get_current_user
+from app.models.user import User
 
 router = APIRouter(prefix="/agents", tags=["episodic"])
 
@@ -23,16 +25,21 @@ async def create_episode(
     metadata: dict = {},
     tags: list[str] = [],
     store_episodic: bool = True,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Create a new episodic memory entry."""
+    # Validate path user_id matches authenticated user
+    if str(current_user.id) != user_id:
+        raise HTTPException(status_code=403, detail="User ID mismatch")
+    
     if not store_episodic:
         return {"id": None, "skipped": True, "reason": "store_episodic=false"}
 
     if settings.demo_mode:
-        from app.demo_db import create_episodic as demo_create
+        from app.demo_db import create_episode as demo_create
         return demo_create(
-            user_id=user_id,
+            user_id=str(current_user.id),
             session_id=session_id,
             content=content,
             metadata=metadata,
@@ -43,7 +50,7 @@ async def create_episode(
     from app.models.memory import EpisodicMemory
 
     record = EpisodicMemory(
-        user_id=user_id,
+        user_id=str(current_user.id),
         session_id=session_id,
         timestamp=timestamp or datetime.utcnow(),
         content=content,
@@ -56,7 +63,7 @@ async def create_episode(
     await db.refresh(record)
     return {
         "id": str(record.id),
-        "user_id": user_id,
+        "user_id": str(current_user.id),
         "timestamp": record.timestamp.isoformat(),
         "created_at": record.created_at.isoformat(),
     }
@@ -68,9 +75,14 @@ async def list_episodes(
     session_id: Optional[str] = Query(None),
     since: Optional[datetime] = Query(None),
     limit: int = Query(default=50, ge=1, le=200),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """List episodic memories for a user."""
+    # Validate path user_id matches authenticated user
+    if str(current_user.id) != user_id:
+        raise HTTPException(status_code=403, detail="User ID mismatch")
+    
     if settings.demo_mode:
         from app.demo_db import get_episodic
         return get_episodic(user_id, limit=limit, session_id=session_id)
@@ -79,7 +91,7 @@ async def list_episodes(
 
     query = (
         select(EpisodicMemory)
-        .where(EpisodicMemory.user_id == user_id)
+        .where(EpisodicMemory.user_id == str(current_user.id))
         .where(EpisodicMemory.store_episodic == True)
     )
     if session_id:
@@ -93,7 +105,7 @@ async def list_episodes(
     return [
         {
             "id": str(r.id),
-            "user_id": r.user_id,
+            "user_id": str(r.user_id),
             "session_id": r.session_id,
             "timestamp": r.timestamp.isoformat(),
             "content": r.content,
@@ -110,21 +122,26 @@ async def list_episodes(
 async def delete_episode(
     user_id: str,
     episode_id: str,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Delete a specific episodic memory."""
+    # Validate path user_id matches authenticated user
+    if str(current_user.id) != user_id:
+        raise HTTPException(status_code=403, detail="User ID mismatch")
+    
     if settings.demo_mode:
-        from app.demo_db import delete_episodic
-        if not delete_episodic(user_id, episode_id):
+        from app.demo_db import delete_episode as demo_delete
+        if not demo_delete(user_id, episode_id):
             raise HTTPException(status_code=404, detail="Episode not found")
         return {"deleted": True, "id": episode_id}
 
     from app.models.memory import EpisodicMemory
-
+    
     result = await db.execute(
         select(EpisodicMemory).where(
             EpisodicMemory.id == episode_id,
-            EpisodicMemory.user_id == user_id,
+            EpisodicMemory.user_id == str(current_user.id),
         )
     )
     record = result.scalar_one_or_none()
@@ -138,18 +155,23 @@ async def delete_episode(
 @router.get("/{user_id}/episodes/count")
 async def count_episodes(
     user_id: str,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Count episodic memories for a user."""
+    # Validate path user_id matches authenticated user
+    if str(current_user.id) != user_id:
+        raise HTTPException(status_code=403, detail="User ID mismatch")
+    
     if settings.demo_mode:
-        from app.demo_db import count_episodic
-        return {"user_id": user_id, "count": count_episodic(user_id)}
+        from app.demo_db import count_episode
+        return {"user_id": user_id, "count": count_episode(user_id)}
 
     from app.models.memory import EpisodicMemory
-
+    
     result = await db.execute(
         select(func.count()).where(
-            EpisodicMemory.user_id == user_id,
+            EpisodicMemory.user_id == str(current_user.id),
             EpisodicMemory.store_episodic == True,
         )
     )

@@ -10,7 +10,9 @@ from app.routers import episodic, semantic, procedural, graph, rag, auth, health
 from app.core.rate_limit import RateLimitMiddleware
 
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Depends, HTTPException
+from app.core.deps import get_current_user
+from app.models.user import User
 from fastapi.middleware.cors import CORSMiddleware
 import time
 import logging
@@ -121,7 +123,7 @@ async def health_check():
 
 
 @app.post("/api/v1/memory/cleanup")
-async def trigger_cleanup():
+async def trigger_cleanup(current_user: User = Depends(get_current_user)):
     """Manually trigger episodic memory cleanup."""
     if settings.demo_mode:
         return {
@@ -144,11 +146,18 @@ async def trigger_cleanup():
 
 
 @app.get("/api/v1/memory/stats/{user_id}")
-async def get_memory_stats(user_id: str):
+async def get_memory_stats(
+    user_id: str,
+    current_user: User = Depends(get_current_user),
+):
     """Get memory statistics for a user."""
+    # Validate path user_id matches authenticated user
+    if str(current_user.id) != user_id:
+        raise HTTPException(status_code=403, detail="User ID mismatch")
+    
     if settings.demo_mode:
         from app.demo_db import get_memory_stats
-        return get_memory_stats(user_id)
+        return get_memory_stats(str(current_user.id))
 
     from app.database import async_session
     from sqlalchemy import text
@@ -163,11 +172,11 @@ async def get_memory_stats(user_id: str):
                     (SELECT COUNT(*) FROM knowledge_nodes WHERE user_id = :uid) as graph_nodes,
                     (SELECT COUNT(*) FROM knowledge_edges WHERE user_id = :uid) as graph_edges
             """),
-            {"uid": user_id}
+            {"uid": str(current_user.id)}
         )
         row = result.fetchone()
         return {
-            "user_id": user_id,
+            "user_id": str(current_user.id),
             "episodic_count": row[0] or 0,
             "semantic_count": row[1] or 0,
             "procedural_count": row[2] or 0,
@@ -178,11 +187,19 @@ async def get_memory_stats(user_id: str):
 
 
 @app.get("/api/v1/memory/recent/{user_id}")
-async def get_recent_memories(user_id: str, limit: int = 10):
+async def get_recent_memories(
+    user_id: str,
+    limit: int = 10,
+    current_user: User = Depends(get_current_user),
+):
     """Get recent memories for the live feed."""
+    # Validate path user_id matches authenticated user
+    if str(current_user.id) != user_id:
+        raise HTTPException(status_code=403, detail="User ID mismatch")
+    
     if settings.demo_mode:
         from app.demo_db import get_recent_memories
-        return get_recent_memories(user_id, limit)
+        return get_recent_memories(str(current_user.id), limit)
 
     from app.database import async_session
     from sqlalchemy import text
@@ -196,7 +213,7 @@ async def get_recent_memories(user_id: str, limit: int = 10):
                 ORDER BY created_at DESC
                 LIMIT :lim
             """),
-            {"uid": user_id, "lim": limit}
+            {"uid": str(current_user.id), "lim": limit}
         )
         rows = result.fetchall()
         return [
@@ -211,7 +228,7 @@ async def get_recent_memories(user_id: str, limit: int = 10):
 
 
 @app.post("/api/v1/demo/reset")
-async def reset_demo():
+async def reset_demo(current_user: User = Depends(get_current_user)):
     """Reset demo data."""
     if not settings.demo_mode:
         return {"error": "Only available in demo mode"}

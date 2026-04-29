@@ -5,6 +5,9 @@ import json
 from datetime import datetime
 from typing import Optional, List, Any
 
+# Fixed demo user ID (UUID string)
+DEMO_USER_ID = "00000000-0000-0000-0000-000000000001"
+
 # In-memory storage for demo mode
 episodic_store: dict[str, list[dict]] = {}
 semantic_store: dict[str, list[dict]] = {}
@@ -375,13 +378,13 @@ def get_memory_stats(user_id: str) -> dict:
 # Initialize Demo Data
 # ==========================================
 
-def initialize_demo_data(user_id: str = "demo_user"):
+def initialize_demo_data(user_id: str = DEMO_USER_ID):
     """Initialize demo data for testing."""
     import random
-
+ 
     # Procedural
     upsert_procedural(
-        user_id,
+        DEMO_USER_ID,
         settings={
             "theme": "dark",
             "language": "en",
@@ -408,7 +411,7 @@ def initialize_demo_data(user_id: str = "demo_user"):
 
     episodic_ids = []
     for session_id, content, tags in episodic_data:
-        result = create_episodic(user_id, session_id, content, {"source": "demo"}, tags)
+        result = create_episodic(DEMO_USER_ID, session_id, content, {"source": "demo"}, tags)
         episodic_ids.append(result["id"])
 
     # Semantic memories with random vectors
@@ -427,7 +430,7 @@ def initialize_demo_data(user_id: str = "demo_user"):
         vector = [v / norm for v in vector]
 
         create_semantic(
-            user_id,
+            DEMO_USER_ID,
             vector=vector,
             episodic_id=ep_id,
             summary=summary,
@@ -447,7 +450,7 @@ def initialize_demo_data(user_id: str = "demo_user"):
 
     node_ids = []
     for label, node_type, props in node_data:
-        node = create_node(user_id, label, node_type, props)
+        node = create_node(DEMO_USER_ID, label, node_type, props)
         node_ids.append(node["id"])
 
     # Knowledge graph edges
@@ -462,8 +465,8 @@ def initialize_demo_data(user_id: str = "demo_user"):
     for from_idx, to_idx, relation, weight in edge_data:
         if from_idx < len(node_ids) and to_idx < len(node_ids):
             try:
-                create_edge(user_id, node_ids[from_idx], node_ids[to_idx], relation, weight)
+                create_edge(DEMO_USER_ID, node_ids[from_idx], node_ids[to_idx], relation, weight)
             except ValueError:
                 pass
 
-    return get_memory_stats(user_id)
+    return get_memory_stats(DEMO_USER_ID)

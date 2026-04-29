@@ -10,6 +10,8 @@ from sqlalchemy import select, desc, func, text
 
 from app.database import get_db
 from app.config import settings
+from app.core.deps import get_current_user
+from app.models.user import User
 from app.services.embedder import embedder
 
 logger = logging.getLogger(__name__)
@@ -26,15 +28,24 @@ async def create_semantic(
     summary: Optional[str] = None,
     embedding_model: str = "text-embedding-3-small",
     index_semantic: bool = True,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Create a new semantic memory entry with vector embedding."""
+    # Validate path user_id matches authenticated user
+    if str(current_user.id) != user_id:
+        raise HTTPException(status_code=403, detail="User ID mismatch")
+    
     if not index_semantic:
         return {"id": None, "skipped": True, "reason": "index_semantic=false"}
 
+    # Validate path user_id matches authenticated user
+    if str(current_user.id) != user_id:
+        raise HTTPException(status_code=403, detail="User ID mismatch")
+    
     if settings.demo_mode:
         from app.demo_db import create_semantic as demo_create
-
+        
         try:
             vector = embedder.embed(content)
         except Exception as e:
@@ -42,7 +53,7 @@ async def create_semantic(
             vector = embedder.random_vector()
 
         return demo_create(
-            user_id=user_id,
+            user_id=str(current_user.id),
             vector=vector,
             episodic_id=episodic_id,
             embedding_model=embedding_model,
@@ -53,14 +64,14 @@ async def create_semantic(
         )
 
     from app.models.memory import SemanticMemory
-
+    
     try:
         vector = embedder.embed(content)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Embedding service error: {str(e)}")
-
+    
     record = SemanticMemory(
-        user_id=user_id,
+        user_id=str(current_user.id),
         episodic_id=episodic_id,
         vector=vector,
         embedding_model=embedding_model,
@@ -72,7 +83,7 @@ async def create_semantic(
     db.add(record)
     await db.commit()
     await db.refresh(record)
-    return {"id": str(record.id), "user_id": user_id, "created_at": record.created_at.isoformat()}
+    return {"id": str(record.id), "user_id": str(current_user.id), "created_at": record.created_at.isoformat()}
 
 
 @router.post("/{user_id}/semantic/search", response_model=List[Dict[str, Any]])
@@ -80,9 +91,14 @@ async def semantic_search(
     user_id: str,
     query: str,
     k: int = Query(default=5, ge=1, le=50),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Search for semantically similar memories using vector similarity."""
+    # Validate path user_id matches authenticated user
+    if str(current_user.id) != user_id:
+        raise HTTPException(status_code=403, detail="User ID mismatch")
+    
     if settings.demo_mode:
         from app.demo_db import search_semantic
 
@@ -108,7 +124,7 @@ async def semantic_search(
         query_vector = embedder.embed(query)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Embedding service error: {str(e)}")
-
+    
     sql = text("""
         SELECT id, summary, content_preview, metadata,
                1 - (vector <=> :query_vec::vector) AS similarity
@@ -117,8 +133,8 @@ async def semantic_search(
         ORDER BY vector <=> :query_vec::vector
         LIMIT :k
     """)
-
-    result = await db.execute(sql, {"query_vec": str(query_vector), "uid": user_id, "k": k})
+    
+    result = await db.execute(sql, {"query_vec": str(query_vector), "uid": str(current_user.id), "k": k})
     rows = result.fetchall()
 
     return [
@@ -137,9 +153,14 @@ async def semantic_search(
 async def list_semantics(
     user_id: str,
     limit: int = Query(default=50, ge=1, le=200),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """List semantic memories for a user."""
+    # Validate path user_id matches authenticated user
+    if str(current_user.id) != user_id:
+        raise HTTPException(status_code=403, detail="User ID mismatch")
+    
     if settings.demo_mode:
         from app.demo_db import get_semantic
         records = get_semantic(user_id, limit)
@@ -160,7 +181,7 @@ async def list_semantics(
 
     result = await db.execute(
         select(SemanticMemory)
-        .where(SemanticMemory.user_id == user_id)
+        .where(SemanticMemory.user_id == str(current_user.id))
         .where(SemanticMemory.index_semantic == True)
         .order_by(desc(SemanticMemory.created_at))
         .limit(limit)
@@ -169,7 +190,7 @@ async def list_semantics(
     return [
         {
             "id": str(r.id),
-            "user_id": r.user_id,
+            "user_id": str(r.user_id),
             "summary": r.summary,
             "content_preview": r.content_preview,
             "embedding_model": r.embedding_model,
@@ -183,20 +204,25 @@ async def list_semantics(
 @router.get("/{user_id}/semantics/count")
 async def count_semantics(
     user_id: str,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Count semantic memories for a user."""
+    # Validate path user_id matches authenticated user
+    if str(current_user.id) != user_id:
+        raise HTTPException(status_code=403, detail="User ID mismatch")
+    
     if settings.demo_mode:
         from app.demo_db import count_semantic
         return {"user_id": user_id, "count": count_semantic(user_id)}
 
     from app.models.memory import SemanticMemory
-
+    
     result = await db.execute(
         select(func.count()).where(
-            SemanticMemory.user_id == user_id,
+            SemanticMemory.user_id == str(current_user.id),
             SemanticMemory.index_semantic == True,
         )
     )
     count = result.scalar()
-    return {"user_id": user_id, "count": count}
+    return {"user_id": str(current_user.id), "count": count}

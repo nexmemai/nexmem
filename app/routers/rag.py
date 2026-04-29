@@ -4,9 +4,12 @@ import logging
 import time
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
-
+from fastapi import APIRouter, HTTPException, Depends
+from sqlalchemy.ext.asyncio import AsyncSession
+from app.database import get_db
 from app.config import settings
+from app.core.deps import get_current_user
+from app.models.user import User
 
 logger = logging.getLogger(__name__)
 
@@ -64,9 +67,15 @@ from app.schemas.memory import RAGRequest, RAGResponse
 @router.post("/rag/chat", response_model=RAGResponse)
 async def rag_chat(
     request: RAGRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
     """Generate a memory-augmented LLM response."""
-    user_id = request.user_id
+    # Validate request user_id matches authenticated user
+    if str(current_user.id) != str(request.user_id):
+        raise HTTPException(status_code=403, detail="User ID mismatch")
+    
+    user_id = str(current_user.id)
     message = request.message
     session_id = request.session_id
     include_episodic = request.include_episodic
@@ -164,87 +173,85 @@ async def rag_chat(
         }
 
     # Production mode with PostgreSQL
-    from app.database import get_db
     from app.models.memory import EpisodicMemory, SemanticMemory, ProceduralMemory, KnowledgeNode
     from app.services.embedder import embedder
     from app.services.llm import llm_service
     from sqlalchemy import select, text
 
-    async for db in get_db():
-        if include_episodic:
-            result = await db.execute(
-                select(EpisodicMemory)
-                .where(EpisodicMemory.user_id == user_id)
-                .where(EpisodicMemory.store_episodic == True)
-                .order_by(EpisodicMemory.timestamp.desc())
-                .limit(10)
-            )
-            episodic_context = [ep.content for ep in result.scalars().all()]
-
-        if include_semantic:
-            try:
-                query_vector = embedder.embed(message)
-                sql = text("""
-                    SELECT content_preview, summary FROM semantic_memory
-                    WHERE user_id = :uid AND index_semantic = TRUE
-                    ORDER BY vector <=> :query_vec::vector LIMIT :k
-                """)
-                result = await db.execute(sql, {"query_vec": str(query_vector), "uid": user_id, "k": top_k})
-                semantic_context = [row.summary or row.content_preview or "" for row in result.fetchall()]
-            except Exception as e:
-                logger.warning(f"Semantic search failed: {e}")
-
-        if include_procedural:
-            result = await db.execute(
-                select(ProceduralMemory).where(
-                    ProceduralMemory.user_id == user_id,
-                    ProceduralMemory.store_procedural == True,
-                )
-            )
-            proc = result.scalar_one_or_none()
-            if proc:
-                procedural_context = {"settings": proc.settings, "workflows": proc.workflows}
-
-        if include_graph:
-            result = await db.execute(
-                select(KnowledgeNode).where(
-                    KnowledgeNode.user_id == user_id, KnowledgeNode.store_associative == True
-                ).limit(10)
-            )
-            graph_context = [f"{n.label} ({n.type}): {n.properties.get('description', '')}" for n in result.scalars().all()]
-
-        try:
-            llm_result = llm_service.generate_rag_response(
-                user_message=message, episodic_context=episodic_context,
-                semantic_context=semantic_context, procedural_context=procedural_context,
-                graph_context=graph_context,
-            )
-            reply, prompt_tokens, completion_tokens = llm_result["reply"], llm_result.get("prompt_tokens", 0), llm_result.get("completion_tokens", 0)
-        except Exception as e:
-            logger.warning(f"LLM service error, using demo fallback: {str(e)}")
-            reply = _generate_demo_reply(message, episodic_context, semantic_context, procedural_context)
-            prompt_tokens = len(message.split()) * 2
-            completion_tokens = len(reply.split()) * 2
-
-        session = session_id or f"rag_{user_id}"
-        new_episode = EpisodicMemory(
-            user_id=user_id, session_id=session,
-            content=f"User: {message}\nAssistant: {reply}",
-            metadata={"source": "rag_chat", "model": settings.openai_llm_model},
-            tags=["rag_interaction"], store_episodic=True,
+    if include_episodic:
+        result = await db.execute(
+            select(EpisodicMemory)
+            .where(EpisodicMemory.user_id == user_id)
+            .where(EpisodicMemory.store_episodic == True)
+            .order_by(EpisodicMemory.timestamp.desc())
+            .limit(10)
         )
-        db.add(new_episode)
-        await db.commit()
+        episodic_context = [ep.content for ep in result.scalars().all()]
 
-        latency_ms = (time.time() - start_time) * 1000
-        return {
-            "reply": reply,
-            "retrieved_episodes": episodic_context[:5],
-            "retrieved_semantics": semantic_context[:5],
-            "retrieved_procedural": procedural_context,
-            "retrieved_graph_nodes": graph_context[:5],
-            "retrieved_graph_edges": [],
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": completion_tokens,
-            "latency_ms": round(latency_ms, 2),
-        }
+    if include_semantic:
+        try:
+            query_vector = embedder.embed(message)
+            sql = text("""
+                SELECT content_preview, summary FROM semantic_memory
+                WHERE user_id = :uid AND index_semantic = TRUE
+                ORDER BY vector <=> :query_vec::vector LIMIT :k
+            """)
+            result = await db.execute(sql, {"query_vec": str(query_vector), "uid": user_id, "k": top_k})
+            semantic_context = [row.summary or row.content_preview or "" for row in result.fetchall()]
+        except Exception as e:
+            logger.warning(f"Semantic search failed: {e}")
+
+    if include_procedural:
+        result = await db.execute(
+            select(ProceduralMemory).where(
+                ProceduralMemory.user_id == user_id,
+                ProceduralMemory.store_procedural == True,
+            )
+        )
+        proc = result.scalar_one_or_none()
+        if proc:
+            procedural_context = {"settings": proc.settings, "workflows": proc.workflows}
+
+    if include_graph:
+        result = await db.execute(
+            select(KnowledgeNode).where(
+                KnowledgeNode.user_id == user_id, KnowledgeNode.store_associative == True
+            ).limit(10)
+        )
+        graph_context = [f"{n.label} ({n.type}): {n.properties.get('description', '')}" for n in result.scalars().all()]
+
+    try:
+        llm_result = llm_service.generate_rag_response(
+            user_message=message, episodic_context=episodic_context,
+            semantic_context=semantic_context, procedural_context=procedural_context,
+            graph_context=graph_context,
+        )
+        reply, prompt_tokens, completion_tokens = llm_result["reply"], llm_result.get("prompt_tokens", 0), llm_result.get("completion_tokens", 0)
+    except Exception as e:
+        logger.warning(f"LLM service error, using demo fallback: {str(e)}")
+        reply = _generate_demo_reply(message, episodic_context, semantic_context, procedural_context)
+        prompt_tokens = len(message.split()) * 2
+        completion_tokens = len(reply.split()) * 2
+
+    session = session_id or f"rag_{user_id}"
+    new_episode = EpisodicMemory(
+        user_id=user_id, session_id=session,
+        content=f"User: {message}\nAssistant: {reply}",
+        metadata={"source": "rag_chat", "model": settings.openai_llm_model},
+        tags=["rag_interaction"], store_episodic=True,
+    )
+    db.add(new_episode)
+    await db.commit()
+
+    latency_ms = (time.time() - start_time) * 1000
+    return {
+        "reply": reply,
+        "retrieved_episodes": episodic_context[:5],
+        "retrieved_semantics": semantic_context[:5],
+        "retrieved_procedural": procedural_context,
+        "retrieved_graph_nodes": graph_context[:5],
+        "retrieved_graph_edges": [],
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "latency_ms": round(latency_ms, 2),
+    }

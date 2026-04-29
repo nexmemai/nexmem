@@ -3,11 +3,14 @@ from fastapi import Depends, HTTPException, status, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from jose import jwt, JWTError
+import uuid
+from datetime import datetime
 
 from app.database import get_db
 from app.models.user import User, APIKey
 from app.core import security
 from app.config import settings
+from app.demo_db import DEMO_USER_ID
 
 async def get_current_user(
     request: Request,
@@ -17,7 +20,16 @@ async def get_current_user(
     Get the current user based on either:
     1. Bearer Token (JWT)
     2. ApiKey (mem_...)
+    3. Demo mode: Return synthetic user
     """
+    # Demo mode bypass: return synthetic user
+    if settings.demo_mode:
+        return User(
+            id=uuid.UUID(DEMO_USER_ID),
+            is_active=True,
+            created_at=datetime.utcnow(),
+        )
+    
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",

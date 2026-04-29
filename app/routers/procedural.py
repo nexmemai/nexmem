@@ -10,8 +10,15 @@ router = APIRouter(prefix="/agents", tags=["procedural"])
 
 
 @router.get("/{user_id}/procedural/settings")
-async def get_procedural(user_id: str):
+async def get_procedural(
+    user_id: str,
+    current_user: User = Depends(get_current_user),
+):
     """Get procedural memory (settings and workflows) for a user."""
+    # Validate path user_id matches authenticated user
+    if str(current_user.id) != user_id:
+        raise HTTPException(status_code=403, detail="User ID mismatch")
+    
     if settings.demo_mode:
         from app.demo_db import get_procedural
         record = get_procedural(user_id)
@@ -25,14 +32,14 @@ async def get_procedural(user_id: str):
 
     async for db in get_db():
         result = await db.execute(
-            select(ProceduralMemory).where(ProceduralMemory.user_id == user_id)
+            select(ProceduralMemory).where(ProceduralMemory.user_id == str(current_user.id))
         )
         record = result.scalar_one_or_none()
         if not record:
             raise HTTPException(status_code=404, detail="No procedural memory found")
         return {
             "id": str(record.id),
-            "user_id": record.user_id,
+            "user_id": str(record.user_id),
             "settings": record.settings,
             "workflows": record.workflows,
             "store_procedural": record.store_procedural,
@@ -87,13 +94,38 @@ async def upsert_procedural(
 
 
 @router.delete("/{user_id}/procedural/settings")
-async def delete_procedural(user_id: str):
+async def delete_procedural(
+    user_id: str,
+    current_user: User = Depends(get_current_user),
+):
     """Delete procedural memory for a user."""
+    # Validate path user_id matches authenticated user
+    if str(current_user.id) != user_id:
+        raise HTTPException(status_code=403, detail="User ID mismatch")
+    
     if settings.demo_mode:
         from app.demo_db import procedural_store
         if user_id in procedural_store:
             del procedural_store[user_id]
             return {"deleted": True, "user_id": user_id}
+        raise HTTPException(status_code=404, detail="No procedural memory found")
+
+    from app.database import get_db
+    from app.models.memory import ProceduralMemory
+    from sqlalchemy import select
+
+    async for db in get_db():
+        result = await db.execute(
+            select(ProceduralMemory).where(
+                ProceduralMemory.user_id == str(current_user.id)
+            )
+        )
+        record = result.scalar_one_or_none()
+        if not record:
+            raise HTTPException(status_code=404, detail="No procedural memory found")
+        await db.delete(record)
+        await db.commit()
+        return {"deleted": True, "user_id": str(current_user.id)}
         raise HTTPException(status_code=404, detail="No procedural memory found")
 
     from app.database import get_db

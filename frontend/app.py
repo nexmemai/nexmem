@@ -330,11 +330,25 @@ st.markdown(GLASSMORPHISM_CSS, unsafe_allow_html=True)
 
 API_BASE = st.secrets.get("API_BASE_URL", "http://localhost:8000")
 
+# Auth token (JWT or API key)
+auth_token = st.text_input(
+    "Auth Token (JWT or API Key)",
+    type="password",
+    help="Enter your JWT or API key for production mode. Leave empty for demo mode."
+)
+
 
 def api_get(endpoint: str, params: dict = None):
     """Make GET request to API."""
+    headers = {}
+    if auth_token:
+        # Check if it's an API key (starts with mem_) or JWT
+        if auth_token.startswith("mem_"):
+            headers["Authorization"] = f"ApiKey {auth_token}"
+        else:
+            headers["Authorization"] = f"Bearer {auth_token}"
     try:
-        r = requests.get(f"{API_BASE}{endpoint}", params=params, timeout=10)
+        r = requests.get(f"{API_BASE}{endpoint}", params=params, headers=headers, timeout=10)
         r.raise_for_status()
         return r.json()
     except Exception as e:
@@ -344,8 +358,15 @@ def api_get(endpoint: str, params: dict = None):
 
 def api_post(endpoint: str, data: dict = None):
     """Make POST request to API."""
+    headers = {}
+    if auth_token:
+        # Check if it's an API key (starts with mem_) or JWT
+        if auth_token.startswith("mem_"):
+            headers["Authorization"] = f"ApiKey {auth_token}"
+        else:
+            headers["Authorization"] = f"Bearer {auth_token}"
     try:
-        r = requests.post(f"{API_BASE}{endpoint}", json=data or {}, timeout=30)
+        r = requests.post(f"{API_BASE}{endpoint}", json=data or {}, headers=headers, timeout=30)
         r.raise_for_status()
         return r.json()
     except Exception as e:
