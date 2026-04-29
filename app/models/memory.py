@@ -8,7 +8,7 @@ from sqlalchemy import (
     Column, String, Text, Boolean, Float,
     DateTime, ForeignKey, Index, CheckConstraint,
 )
-from sqlalchemy.dialects.postgresql import UUID, JSONB, ARRAY
+from sqlalchemy.dialects.postgresql import UUID, JSONB, ARRAY, TSVECTOR
 from sqlalchemy.orm import relationship, Mapped, mapped_column
 from pgvector.sqlalchemy import Vector
 
@@ -40,6 +40,8 @@ class EpisodicMemory(Base):
         DateTime(timezone=True), nullable=False, default=datetime.utcnow
     )
     content: Mapped[str] = mapped_column(Text, nullable=False)
+    # FTS vector for full-text search
+    text_search: Mapped[Optional[TSVECTOR]] = mapped_column(TSVECTOR, nullable=True)
     # NOTE: column name stays 'metadata' in DB; attribute renamed to avoid
     # conflict with SQLAlchemy's reserved DeclarativeBase.metadata attribute
     extra_metadata: Mapped[dict] = mapped_column("metadata", JSONB, default=dict)
@@ -49,6 +51,9 @@ class EpisodicMemory(Base):
     )
     consolidated: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False
+    )
+    consolidated_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
     importance_score: Mapped[float] = mapped_column(
         Float, nullable=False, default=0.0
@@ -89,6 +94,8 @@ class SemanticMemory(Base):
     )
     summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     content_preview: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # FTS vector for full-text search
+    text_search: Mapped[Optional[TSVECTOR]] = mapped_column(TSVECTOR, nullable=True)
     extra_metadata: Mapped[dict] = mapped_column("metadata", JSONB, default=dict)
     index_semantic: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True
@@ -111,6 +118,7 @@ class ProceduralMemory(Base):
     )
     # unique=True: one procedural profile per user
     user_id = Column(UUID(as_uuid=True), nullable=False, unique=True, index=True)
+    app_id = _app_id_col()  # Optional app_id for multi-app scoping
     settings: Mapped[dict] = mapped_column(JSONB, default=dict)
     workflows: Mapped[dict] = mapped_column(JSONB, default=list)
     store_procedural: Mapped[bool] = mapped_column(

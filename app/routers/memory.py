@@ -1,7 +1,7 @@
 """Memory router - Unified context API and episode write endpoint."""
 
 from typing import Optional, List, Dict, Any
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
@@ -21,6 +21,7 @@ class ContextRequest(BaseModel):
     episodic_limit: int = Field(5, description="Number of recent episodes")
     max_tokens: int = Field(1200, description="Max context tokens")
     filters: Optional[Dict] = None
+    app_id: Optional[str] = Field(None, description="Filter by app ID")
 
 
 class ContextResponse(BaseModel):
@@ -132,17 +133,27 @@ async def get_memory_context(
     semantic_hits = []
     if query_embedding:
         embedding_str = "[" + ",".join(str(x) for x in query_embedding) + "]"
-        result = await db.execute(
-            text("""
+        sql_text = """
                 SELECT id, content_preview, metadata,
                        1 - (vector <=> :vec::vector) as similarity
                 FROM semantic_memory
                 WHERE user_id = :uid
+        """
+        params = {"vec": embedding_str, "uid": user_id, "k": body.semantic_top_k}
+
+        # Filter by app_id if provided
+        if body.app_id:
+            try:
+                sql_text += " AND app_id = :app_id"
+                params["app_id"] = body.app_id
+            except ValueError:
+                pass
+
+        sql_text += """
                 ORDER BY vector <=> :vec::vector
                 LIMIT :k
-            """),
-            {"vec": embedding_str, "uid": user_id, "k": body.semantic_top_k}
-        )
+            """
+        result = await db.execute(text(sql_text), params)
         rows = result.fetchall()
         semantic_hits = [
             {
@@ -154,16 +165,25 @@ async def get_memory_context(
             for row in rows
         ]
 
-    result = await db.execute(
-        text("""
-            SELECT id, content, created_at, metadata
-            FROM episodic_memory
-            WHERE user_id = :uid
-            ORDER BY created_at DESC
-            LIMIT :lim
-        """),
-        {"uid": user_id, "lim": body.episodic_limit}
-    )
+    # Build episodic query with optional app_id filter
+    episodic_sql = """
+        SELECT id, content, created_at, metadata
+        FROM episodic_memory
+        WHERE user_id = :uid
+    """
+    episodic_params = {"uid": user_id, "lim": body.episodic_limit}
+
+    # Filter by app_id if provided
+    if body.app_id:
+        episodic_sql += " AND app_id = :app_id"
+        episodic_params["app_id"] = body.app_id
+
+    episodic_sql += """
+        ORDER BY created_at DESC
+        LIMIT :lim
+    """
+
+    result = await db.execute(text(episodic_sql), episodic_params)
     rows = result.fetchall()
     recent_episodes = []
     for row in rows:
@@ -177,10 +197,16 @@ async def get_memory_context(
             "decay_score": round(decay, 3),
         })
 
-    result = await db.execute(
-        text("SELECT settings, workflows FROM procedural_memory WHERE user_id = :uid"),
-        {"uid": user_id}
-    )
+    # Build procedural query with optional app_id filter
+    proc_sql = "SELECT settings, workflows FROM procedural_memory WHERE user_id = :uid"
+    proc_params = {"uid": user_id}
+
+    # Filter by app_id if provided
+    if body.app_id:
+        proc_sql += " AND app_id = :app_id"
+        proc_params["app_id"] = body.app_id
+
+    result = await db.execute(text(proc_sql), proc_params)
     row = result.fetchone()
     preferences = {
         "settings": row[0] if row and row[0] else {},
@@ -351,17 +377,45 @@ async def write_episode(
 @router.get("/engram/{engram_id}")
 async def get_engram(
     engram_id: str,
+    app_id: Optional[str] = Query(default=None, description="Filter by app ID"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Get a specific engram by ID."""
-    result = await db.execute(
-        text("SELECT * FROM engrams WHERE user_id = :uid AND engram_id = :eid"),
-        {"uid": str(current_user.id), "eid": engram_id}
-    )
+    sql_text = "SELECT * FROM engrams WHERE user_id = :uid AND engram_id = :eid"
+    params = {"uid": str(current_user.id), "eid": engram_id}
+
+    # Filter by app_id if provided
+    if app_id:
+        sql_text += " AND app_id = :app_id"
+        params["app_id"] = app_id
+
+    result = await db.execute(text(sql_text), params)
     row = result.fetchone()
     if not row:
         return {"error": "Engram not found"}
 
     columns = result.keys()
     return dict(zip(columns, row))
+
+
+@router.post("/consolidate", response_model=Dict[str, Any])
+async def trigger_consolidation(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Manually trigger memory consolidation for the current user.
+    Processes unconsolidated episodic memories older than 1 day.
+    """
+    from app.services.consolidation import consolidate_for_user
+    from app.services.llm import LLMService
+    from app.services.embedder import EmbeddingService
+
+    embedder = EmbeddingService()
+    llm = LLMService()
+
+    count = await consolidate_for_user(
+        db, str(current_user.id), embedder, llm, engram_processor
+    )
+    return {"status": "ok", "consolidated_count": count}

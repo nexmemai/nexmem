@@ -479,7 +479,7 @@ def load_graph_edges():
 # ==========================================
 
 # User ID input (top bar)
-col_top1, col_top2, col_top3 = st.columns([1, 2, 1])
+col_top1, col_top2, col_top3, col_top4 = st.columns([1, 2, 1, 1])
 with col_top1:
     st.markdown("### \U0001f9e0 AI Memory Layer")
 with col_top2:
@@ -497,6 +497,12 @@ with col_top3:
         load_stats()
         load_recent_memories()
         st.rerun()
+with col_top4:
+    # Auth badge
+    if auth_token:
+        st.markdown("🔒 **Authenticated**")
+    else:
+        st.markdown("🔓 **Demo Mode**")
 
 st.markdown("---")
 

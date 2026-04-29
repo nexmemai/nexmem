@@ -8,7 +8,14 @@ Key decisions:
 """
 
 import asyncio
+import sys
+from pathlib import Path
 from logging.config import fileConfig
+
+# Add project root to sys.path so 'app' module can be found
+project_root = Path(__file__).parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
 
 from alembic import context
 from sqlalchemy import pool

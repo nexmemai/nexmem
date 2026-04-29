@@ -256,6 +256,7 @@ async def consolidate_episode(
         
         # 7. Mark episode as consolidated
         episode.consolidated = True
+        episode.consolidated_at = datetime.utcnow()
         episode.importance_score = importance
         
         await db.commit()

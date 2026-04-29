@@ -5,6 +5,7 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 from app.database import get_db
 from app.config import settings
 from app.core.deps import get_current_user
@@ -109,30 +110,39 @@ async def list_nodes(
 
 
 @router.delete("/{user_id}/graph/nodes/{node_id}")
-async def delete_node(user_id: str, node_id: str):
+async def delete_node(
+    user_id: str,
+    node_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
     """Delete a knowledge graph node and its edges."""
+    # Validate path user_id matches authenticated user
+    if str(current_user.id) != user_id:
+        raise HTTPException(status_code=403, detail="User ID mismatch")
+
     if settings.demo_mode:
         from app.demo_db import delete_node
         if not delete_node(user_id, node_id):
             raise HTTPException(status_code=404, detail="Node not found")
         return {"deleted": True, "id": node_id}
 
-    from app.database import get_db
-    from app.models.memory import KnowledgeNode
-    from sqlalchemy import select
-
-    async for db in get_db():
-        result = await db.execute(
-            select(KnowledgeNode).where(
-                KnowledgeNode.id == node_id, KnowledgeNode.user_id == user_id,
-            )
+    result = await db.execute(
+        select(KnowledgeNode).where(
+            KnowledgeNode.id == node_id, KnowledgeNode.user_id == user_id,
         )
-        record = result.scalar_one_or_none()
-        if not record:
-            raise HTTPException(status_code=404, detail="Node not found")
-        await db.delete(record)
-        await db.commit()
-        return {"deleted": True, "id": node_id}
+    )
+    record = result.scalar_one_or_none()
+    if not record:
+        raise HTTPException(status_code=404, detail="Node not found")
+
+    # Verify node belongs to authenticated user
+    if str(record.user_id) != str(current_user.id):
+        raise HTTPException(status_code=403, detail="Node does not belong to user")
+
+    await db.delete(record)
+    await db.commit()
+    return {"deleted": True, "id": node_id}
 
 
 # ==========================================
@@ -250,6 +260,7 @@ async def find_path(
     from_node_id: str,
     to_node_id: str,
     max_hops: int = Query(default=3, ge=1, le=10),
+    app_id: Optional[str] = Query(default=None, description="Filter by app ID"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -272,6 +283,19 @@ async def find_path(
     if not from_node or not to_node:
         raise HTTPException(status_code=404, detail="One or both nodes not found")
 
+    # Verify nodes belong to the user
+    if str(from_node.user_id) != str(current_user.id) or str(to_node.user_id) != str(current_user.id):
+        raise HTTPException(status_code=403, detail="Nodes do not belong to user")
+
+    # Verify nodes belong to app_id if provided
+    if app_id:
+        try:
+            app_id_uuid = uuid.UUID(app_id)
+            if from_node.app_id != app_id_uuid or to_node.app_id != app_id_uuid:
+                raise HTTPException(status_code=403, detail="Nodes do not belong to specified app")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid app_id format")
+
     visited = {from_node_id}
     queue = deque([(from_node_id, [from_node_id])])
 
@@ -291,12 +315,19 @@ async def find_path(
         if len(path) - 1 >= max_hops:
             continue
 
-        result = await db.execute(
-            select(KnowledgeEdge).where(
-                KnowledgeEdge.from_node_id == current_id,
-                KnowledgeEdge.user_id == str(current_user.id),
-            )
+        # Build edge query with optional app_id filter
+        edge_query = select(KnowledgeEdge).where(
+            KnowledgeEdge.from_node_id == current_id,
+            KnowledgeEdge.user_id == str(current_user.id),
         )
+        # Filter by app_id if provided
+        if app_id:
+            try:
+                edge_query = edge_query.where(KnowledgeEdge.app_id == uuid.UUID(app_id))
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid app_id format")
+        
+        result = await db.execute(edge_query)
         edges = result.scalars().all()
         for edge in edges:
             neighbor_id = str(edge.to_node_id)

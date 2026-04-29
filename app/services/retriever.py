@@ -362,66 +362,50 @@ def combine_and_deduplicate(
     graph_results: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
     """
-    Combine results from all sources and de-duplicate.
-    Assigns combined scores using weighted average.
+    Combine results from all sources using Reciprocal Rank Fusion (RRF).
+    RRF formula: score = sum(1 / (k + rank)) for each source.
+    Default k=60 (standard RRF constant).
     """
+    RRF_K = 60  # Standard RRF constant
+    
     # Use dict to track unique results by ID
     combined = {}
     
-    # Weight for each source
-    weights = {
-        "vector": 0.5,
-        "keyword": 0.3,
-        "graph": 0.2,
-    }
+    # Combine all results with their source and rank
+    all_results = []
     
-    # Process vector results
-    for r in vector_results:
+    # Add vector results with their ranks
+    for rank, r in enumerate(vector_results, start=1):
+        all_results.append((r, "vector", rank))
+    
+    # Add keyword results with their ranks
+    for rank, r in enumerate(keyword_results, start=1):
+        all_results.append((r, "keyword", rank))
+    
+    # Add graph results with their ranks
+    for rank, r in enumerate(graph_results, start=1):
+        all_results.append((r, "graph", rank))
+    
+    # Calculate RRF score for each result
+    for r, source, rank in all_results:
         rid = r["id"]
+        rrf_score = 1.0 / (RRF_K + rank)
+        
         if rid not in combined:
             combined[rid] = {
                 **r,
-                "sources": [r["source"]],
-                "combined_score": r["score"] * weights.get(r["source"], 0.33),
-            }
-        else:
-            # Update existing entry
-            existing = combined[rid]
-            existing["sources"].append(r["source"])
-            existing["combined_score"] += r["score"] * weights.get(r["source"], 0.33)
-    
-    # Process keyword results
-    for r in keyword_results:
-        rid = r["id"]
-        if rid not in combined:
-            combined[rid] = {
-                **r,
-                "sources": [r["source"]],
-                "combined_score": r["score"] * weights.get(r["source"], 0.33),
+                "sources": [source],
+                "rrf_score": rrf_score,
             }
         else:
             existing = combined[rid]
-            existing["sources"].append(r["source"])
-            existing["combined_score"] += r["score"] * weights.get(r["source"], 0.33)
+            existing["sources"].append(source)
+            existing["rrf_score"] += rrf_score
     
-    # Process graph results
-    for r in graph_results:
-        rid = r["id"]
-        if rid not in combined:
-            combined[rid] = {
-                **r,
-                "sources": [r["source"]],
-                "combined_score": r["score"] * weights.get(r["source"], 0.33),
-            }
-        else:
-            existing = combined[rid]
-            existing["sources"].append(r["source"])
-            existing["combined_score"] += r["score"] * weights.get(r["source"], 0.33)
-    
-    # Sort by combined score
+    # Sort by RRF score (highest first)
     sorted_results = sorted(
         combined.values(),
-        key=lambda x: x["combined_score"],
+        key=lambda x: x["rrf_score"],
         reverse=True
     )
     
