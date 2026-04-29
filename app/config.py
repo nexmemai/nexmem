@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     semantic_top_k: int = 5
     vector_dim: int = 1536
 
+    # ── Consolidation Settings ─────────────────────────────────────
+    consolidation_interval_minutes: int = 30
+    consolidation_llm_model: str = "gpt-4o-mini"
+
     # ── App Settings ───────────────────────────────────────────────────────────
     app_host: str = "0.0.0.0"
     app_port: int = 8000

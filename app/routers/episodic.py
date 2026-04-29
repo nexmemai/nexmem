@@ -177,3 +177,34 @@ async def count_episodes(
     )
     count = result.scalar()
     return {"user_id": user_id, "count": count}
+
+
+@router.post("/{user_id}/consolidate")
+async def trigger_consolidation(
+    user_id: str,
+    days_old: int = Query(default=1, ge=1, le=30),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Manually trigger memory consolidation for a user."""
+    if str(current_user.id) != user_id:
+        raise HTTPException(status_code=403, detail="User ID mismatch")
+    
+    if settings.demo_mode:
+        from app.demo_db import get_episodes_to_consolidate, consolidate_episode_demo
+        episodes = get_episodes_to_consolidate(user_id, days_old)
+        consolidated_count = 0
+        for episode in episodes:
+            if consolidate_episode_demo(episode):
+                consolidated_count += 1
+        return {"consolidated": consolidated_count, "status": "success", "user_id": user_id}
+    
+    from app.services.consolidation import consolidate_for_user
+    from app.services.embedder import embedder
+    from app.services.llm import llm_service
+    from app.services.engram_processor import engram_processor
+    
+    count = await consolidate_for_user(
+        db, user_id, embedder, llm_service, engram_processor, days_old
+    )
+    return {"consolidated": count, "status": "success", "user_id": user_id}

@@ -49,10 +49,16 @@ async def lifespan(app: FastAPI):
 
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+        
+        # Start consolidation scheduler
+        from app.services.scheduler import start_scheduler
+        start_scheduler()
 
     yield
 
     if not settings.demo_mode:
+        from app.services.scheduler import stop_scheduler
+        stop_scheduler()
         from app.database import engine
         await engine.dispose()
 

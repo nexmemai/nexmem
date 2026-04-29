@@ -2,7 +2,7 @@
 
 import uuid
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, List, Any
 
 # Fixed demo user ID (UUID string)
@@ -48,6 +48,8 @@ def create_episodic(
         "metadata": metadata or {},
         "tags": tags or [],
         "store_episodic": store_episodic,
+        "consolidated": False,
+        "importance_score": 0.0,
         "created_at": get_timestamp(),
     }
 
@@ -77,6 +79,50 @@ def delete_episodic(user_id: str, episode_id: str) -> bool:
             records.pop(i)
             return True
     return False
+
+
+def get_episodes_to_consolidate(user_id: str, days_old: int = 1) -> list[dict]:
+    """Get unconsolidated episodes older than X days."""
+    records = episodic_store.get(user_id, [])
+    cutoff = (datetime.utcnow() - timedelta(days=days_old)).isoformat()
+    return [
+        r for r in records
+        if not r.get("consolidated", False) and r.get("timestamp", "") < cutoff
+    ]
+
+
+def consolidate_episode_demo(episode: dict) -> bool:
+    """Mark episode as consolidated in demo mode."""
+    episode["consolidated"] = True
+    episode["importance_score"] = 0.8  # Default score
+    
+    # Create semantic memory from episode
+    from app.services.embedder import embedder
+    try:
+        vector = embedder.random_vector()  # Demo mode uses random vectors
+        create_semantic(
+            episode["user_id"],
+            vector=vector,
+            summary=episode["content"][:200],
+            content_preview=episode["content"][:500],
+            metadata={"source": "consolidation", "episode_id": episode["id"]},
+        )
+    except Exception as e:
+        print(f"Failed to create semantic memory in demo: {e}")
+    
+    # Create graph node from first tag (demo simplification)
+    if episode.get("tags"):
+        try:
+            create_node(
+                episode["user_id"],
+                label=episode["tags"][0],
+                node_type="concept",
+                properties={"source": "consolidation"},
+            )
+        except Exception as e:
+            print(f"Failed to create graph node in demo: {e}")
+    
+    return True
 
 
 # ==========================================

@@ -47,6 +47,13 @@ class EpisodicMemory(Base):
     store_episodic: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True
     )
+    consolidated: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    importance_score: Mapped[float] = mapped_column(
+        Float, nullable=False, default=0.0
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=datetime.utcnow
     )
