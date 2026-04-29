@@ -50,6 +50,7 @@ def create_episodic(
         "store_episodic": store_episodic,
         "consolidated": False,
         "importance_score": 0.0,
+        "app_id": None,  # New field for multi-app scoping
         "created_at": get_timestamp(),
     }
 
@@ -60,10 +61,12 @@ def create_episodic(
     return {"id": record["id"], "user_id": user_id, "created_at": record["created_at"]}
 
 
-def get_episodic(user_id: str, limit: int = 50, session_id: str = None) -> list[dict]:
+def get_episodic(user_id: str, limit: int = 50, session_id: str = None, app_id: str = None) -> list[dict]:
     records = episodic_store.get(user_id, [])
     if session_id:
         records = [r for r in records if r.get("session_id") == session_id]
+    if app_id:
+        records = [r for r in records if r.get("app_id") == app_id]
     records = sorted(records, key=lambda x: x.get("timestamp", ""), reverse=True)
     return records[:limit]
 
@@ -152,6 +155,7 @@ def create_semantic(
         "content_preview": content_preview,
         "metadata": metadata or {},
         "index_semantic": index_semantic,
+        "app_id": None,  # New field for multi-app scoping
         "created_at": get_timestamp(),
     }
 
@@ -182,12 +186,16 @@ def cosine_similarity(vec1: list[float], vec2: list[float]) -> float:
     return dot / (norm1 * norm2)
 
 
-def search_semantic(user_id: str, query_vector: list[float], k: int = 5) -> list[dict]:
+def search_semantic(user_id: str, query_vector: list[float], k: int = 5, app_id: str = None) -> list[dict]:
     """Search semantic memories by vector similarity."""
     records = semantic_store.get(user_id, [])
     if not records:
         return []
-
+    
+    # Filter by app_id if provided
+    if app_id:
+        records = [r for r in records if r.get("app_id") == app_id]
+    
     results = []
     for r in records:
         if r.get("vector"):
@@ -196,7 +204,7 @@ def search_semantic(user_id: str, query_vector: list[float], k: int = 5) -> list
                 **r,
                 "similarity": round(sim, 4),
             })
-
+    
     results.sort(key=lambda x: x.get("similarity", 0), reverse=True)
     return results[:k]
 
@@ -245,6 +253,7 @@ def create_node(user_id: str, label: str, node_type: str, properties: dict = Non
         "type": node_type,
         "properties": properties or {},
         "store_associative": True,
+        "app_id": None,  # New field for multi-app scoping
         "created_at": get_timestamp(),
     }
 
@@ -255,10 +264,13 @@ def create_node(user_id: str, label: str, node_type: str, properties: dict = Non
     return record
 
 
-def get_nodes(user_id: str, node_type: str = None, limit: int = 100) -> list[dict]:
+def get_nodes(user_id: str, node_type: str = None, limit: int = 100, app_id: str = None) -> list[dict]:
     records = graph_nodes_store.get(user_id, [])
     if node_type:
         records = [r for r in records if r.get("type") == node_type]
+    # Filter by app_id if provided
+    if app_id:
+        records = [r for r in records if r.get("app_id") == app_id]
     return records[:limit]
 
 
@@ -309,6 +321,7 @@ def create_edge(
         "relation": relation,
         "weight": weight,
         "metadata": metadata or {},
+        "app_id": None,  # New field for multi-app scoping
         "created_at": get_timestamp(),
     }
 
@@ -319,10 +332,13 @@ def create_edge(
     return record
 
 
-def get_edges(user_id: str, node_id: str = None, limit: int = 200) -> list[dict]:
+def get_edges(user_id: str, node_id: str = None, limit: int = 200, app_id: str = None) -> list[dict]:
     records = graph_edges_store.get(user_id, [])
     if node_id:
         records = [r for r in records if r.get("from_node_id") == node_id or r.get("to_node_id") == node_id]
+    # Filter by app_id if provided
+    if app_id:
+        records = [r for r in records if r.get("app_id") == app_id]
     return records[:limit]
 
 
