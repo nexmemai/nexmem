@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: mnemo-api
+    env: python
+    plan: free
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT"
+    healthCheckPath: /health/live
+    envVars:
+      - key: DATABASE_URL
+        value: postgresql://postgres:***REDACTED_PASSWORD***@db.***REDACTED_PROJECT_ID***.supabase.co:5432/postgres
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DEMO_MODE
+        value: "false"
+      - key: ENVIRONMENT
+        value: "production"
+      - key: ALLOWED_ORIGINS
+        value: "https://mnemo-api.onrender.com"
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: CONSOLIDATION_INTERVAL_MINUTES
+        value: "30"
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+
+databases: []
