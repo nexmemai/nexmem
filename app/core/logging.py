@@ -1,28 +1,28 @@
 import logging
-import json
 import sys
-from datetime import datetime, timezone
-
-
-class JSONFormatter(logging.Formatter):
-    def format(self, record):
-        data = {
-            "ts": datetime.now(timezone.utc).isoformat(),
-            "level": record.levelname,
-            "logger": record.name,
-            "msg": record.getMessage(),
-            "request_id": getattr(record, "request_id", None),
-            "user_id": getattr(record, "user_id", None),
-        }
-        return json.dumps(data)
-
+import structlog
 
 def configure_logging():
-    """Configure root logger with JSON formatting once at startup."""
+    """Configure structlog for JSON structured logging."""
+    structlog.configure(
+        processors=[
+            structlog.contextvars.merge_contextvars,
+            structlog.stdlib.add_log_level,
+            structlog.stdlib.add_logger_name,
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.processors.StackInfoRenderer(),
+            structlog.processors.format_exc_info,
+            structlog.processors.JSONRenderer(),
+        ],
+        wrapper_class=structlog.stdlib.BoundLogger,
+        context_class=dict,
+        logger_factory=structlog.stdlib.LoggerFactory(),
+        cache_logger_on_first_use=True,
+    )
+    
+    # Configure standard logging to route through structlog
     handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(JSONFormatter())
-
-    root = logging.getLogger()  # root logger - captures everything
+    root = logging.getLogger()
     root.setLevel(logging.INFO)
-    root.handlers = []  # remove any pre-existing handlers
+    root.handlers = []
     root.addHandler(handler)

@@ -222,12 +222,14 @@ async def trigger_consolidation(
                 consolidated_count += 1
         return {"consolidated": consolidated_count, "status": "success", "user_id": user_id}
     
-    from app.services.consolidation import consolidate_for_user
-    from app.services.embedder import embedder
-    from app.services.llm import llm_service
-    from app.services.engram_processor import engram_processor
+    from app.tasks import consolidate_user_memory_task
     
-    count = await consolidate_for_user(
-        db, user_id, embedder, llm_service, engram_processor, days_old
-    )
-    return {"consolidated": count, "status": "success", "user_id": user_id}
+    # Task 3.1: Dispatch to Celery background worker instead of blocking main thread
+    task = consolidate_user_memory_task.delay(user_id=user_id, days_old=days_old)
+    
+    return {
+        "status": "queued", 
+        "user_id": user_id, 
+        "task_id": task.id,
+        "message": "Consolidation task has been queued in the background."
+    }

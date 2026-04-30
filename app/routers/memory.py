@@ -521,14 +521,14 @@ async def trigger_consolidation(
     Manually trigger memory consolidation for the current user.
     Processes unconsolidated episodic memories older than 1 day.
     """
-    from app.services.consolidation import consolidate_for_user
-    from app.services.llm import LLMService
-    from app.services.embedder import EmbeddingService
-
-    embedder = EmbeddingService()
-    llm = LLMService()
-
-    count = await consolidate_for_user(
-        db, str(current_user.id), embedder, llm, engram_processor
-    )
-    return {"status": "ok", "consolidated_count": count}
+    from app.tasks import consolidate_user_memory_task
+    
+    # Task 3.1: Dispatch to Celery background worker instead of blocking main thread
+    task = consolidate_user_memory_task.delay(user_id=str(current_user.id), days_old=1)
+    
+    return {
+        "status": "queued", 
+        "user_id": str(current_user.id),
+        "task_id": task.id,
+        "message": "Consolidation task has been queued in the background."
+    }

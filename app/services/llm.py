@@ -39,6 +39,8 @@ class LLMService:
         Returns:
             Dict with reply, usage stats, and latency
         """
+        from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
+        
         start_time = time.time()
 
         system_prompt = self._build_system_prompt(
@@ -48,8 +50,14 @@ class LLMService:
             graph_context=graph_context or [],
         )
 
-        try:
-            response = self.client.chat.completions.create(
+        @retry(
+            wait=wait_exponential(multiplier=1, min=2, max=10),
+            stop=stop_after_attempt(3),
+            retry=retry_if_exception_type((openai.APIConnectionError, openai.RateLimitError, openai.InternalServerError)),
+            reraise=True
+        )
+        def _call_llm():
+            return self.client.chat.completions.create(
                 model=self.model,
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -59,6 +67,8 @@ class LLMService:
                 max_tokens=1024,
             )
 
+        try:
+            response = _call_llm()
             latency_ms = (time.time() - start_time) * 1000
 
             return {

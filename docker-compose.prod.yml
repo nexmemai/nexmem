@@ -1,5 +1,15 @@
 version: "3.9"
 services:
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
   api:
     build:
       context: .
@@ -11,6 +21,11 @@ services:
       - SECRET_KEY=${SECRET_KEY}
       - ENVIRONMENT=production
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS}
+      - REDIS_URL=redis://redis:6379/0
+      - SENTRY_DSN=${SENTRY_DSN}
+    depends_on:
+      redis:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8000/health/live"]
@@ -19,6 +34,22 @@ services:
       retries: 3
     command: >
       sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2"
+
+  celery_worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - ENVIRONMENT=production
+      - REDIS_URL=redis://redis:6379/0
+      - SENTRY_DSN=${SENTRY_DSN}
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    command: celery -A app.celery_app.celery_app worker --loglevel=info --concurrency=2
 
   frontend:
     build:

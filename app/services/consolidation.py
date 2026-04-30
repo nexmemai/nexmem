@@ -77,9 +77,17 @@ async def summarize_with_llm(
     max_length: int = 200,
 ) -> str:
     """Use gpt-4o-mini to create concise summary."""
-    try:
-        response = await asyncio.to_thread(
-            llm_service.client.chat.completions.create,
+    from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
+    import openai
+
+    @retry(
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        stop=stop_after_attempt(3),
+        retry=retry_if_exception_type((openai.APIConnectionError, openai.RateLimitError, openai.InternalServerError)),
+        reraise=True
+    )
+    def _call_llm():
+        return llm_service.client.chat.completions.create(
             model=settings.consolidation_llm_model,
             messages=[
                 {"role": "system", "content": "Summarize the following memory concisely, extracting key facts and insights. Keep under 200 words."},
@@ -88,10 +96,13 @@ async def summarize_with_llm(
             temperature=0.3,
             max_tokens=300,
         )
+
+    try:
+        response = await asyncio.to_thread(_call_llm)
         summary = response.choices[0].message.content.strip()
         return summary[:max_length] if len(summary) > max_length else summary
     except Exception as e:
-        logger.warning(f"LLM summarization failed: {e}. Using raw content.")
+        logger.warning(f"LLM summarization failed after retries: {e}. Using raw content.")
         return content[:max_length]
 
 

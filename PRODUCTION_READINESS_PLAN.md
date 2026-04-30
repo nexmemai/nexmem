@@ -33,49 +33,49 @@ As an AI memory layer, the database will experience high write throughput and re
 
 The background consolidation engine (extracting engrams and graphs via spaCy/NetworkX) must not block the main thread or be lost during server restarts.
 
-- [ ] **Task 3.1: Message Queue Integration**
+- [x] **Task 3.1: Message Queue Integration**
   - Migrate the background `trigger_consolidation` tasks from FastAPI `BackgroundTasks` to a robust message queue like Celery (with Redis/RabbitMQ) or AWS SQS.
-- [ ] **Task 3.2: LLM Resiliency**
+- [x] **Task 3.2: LLM Resiliency**
   - Add exponential backoff and retry mechanisms (using the `tenacity` library) for any external LLM calls (e.g., OpenAI/Claude) to handle rate limits or transient API outages.
-- [ ] **Task 3.3: Dead Letter Queues (DLQ)**
+- [x] **Task 3.3: Dead Letter Queues (DLQ)**
   - Implement DLQs for failed consolidation tasks to ensure no user memories are permanently lost if processing fails.
 
 ## Phase 4: Observability and Monitoring
 
 You cannot fix what you cannot see. Production requires strict tracking of latency, errors, and LLM token usage.
 
-- [ ] **Task 4.1: Structured Logging**
+- [x] **Task 4.1: Structured Logging**
   - Replace `print()` and standard python logging with structured JSON logging (e.g., `structlog`) to enable easy querying in Datadog or ELK.
-- [ ] **Task 4.2: Application Performance Monitoring (APM)**
+- [x] **Task 4.2: Application Performance Monitoring (APM)**
   - Integrate Prometheus metrics (via `prometheus-fastapi-instrumentator`) to track endpoint latency (especially `get_memory_context`).
-- [ ] **Task 4.3: Error Tracking**
+- [x] **Task 4.3: Error Tracking**
   - Integrate Sentry for real-time unhandled exception tracking and alert routing.
-- [ ] **Task 4.4: Cost/Token Tracking**
+- [x] **Task 4.4: Cost/Token Tracking**
   - Implement a mechanism to log token usage per `app_id` to track LLM costs and bill users accurately.
 
 ## Phase 5: CI/CD and Deployment Automation
 
 Ensure code can be deployed reliably and rollbacks are instantaneous.
 
-- [ ] **Task 5.1: Containerization**
+- [x] **Task 5.1: Containerization**
   - Finalize `Dockerfile` (multi-stage build to reduce image size) and `docker-compose.prod.yml`.
-- [ ] **Task 5.2: CI/CD Pipeline (GitHub Actions)**
+- [x] **Task 5.2: CI/CD Pipeline (GitHub Actions)**
   - Create a pipeline that runs on every PR:
     - Code linting (`flake8`, `black`, `mypy`).
     - Automated tests.
     - Docker image build and push to a container registry (ECR, Docker Hub).
-- [ ] **Task 5.3: Backend Deployment (Render / AWS / GCP)**
+- [x] **Task 5.3: Backend Deployment (Render / AWS / GCP)**
   - Set up continuous deployment to a cloud provider. For Render, configure the `render.yaml` blueprint.
-- [ ] **Task 5.4: Frontend Deployment (Vercel)**
+- [x] **Task 5.4: Frontend Deployment (Vercel)**
   - Connect the `nexmem-landing` Next.js repository to Vercel.
   - Map the custom domain (`nexmem.ai`).
 
 ## Phase 6: Testing and Quality Assurance
 
-- [ ] **Task 6.1: Unit & Integration Tests**
+- [x] **Task 6.1: Unit & Integration Tests**
   - Write Pytest suites covering the entire core logic: unified write logic, cross-encoder reranking, and `app_id` context isolation.
   - Mock the database (using testcontainers or SQLite/pglite) and LLM responses.
-- [ ] **Task 6.2: Load Testing**
+- [x] **Task 6.2: Load Testing**
   - Use `Locust` or `k6` to simulate high-traffic agent interactions and ensure the FastAPI backend scales horizontally.
-- [ ] **Task 6.3: Security Audit**
+- [x] **Task 6.3: Security Audit**
   - Run SAST tools (e.g., `bandit`) to scan the codebase for vulnerabilities.

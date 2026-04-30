@@ -9,6 +9,11 @@ services:
     envVars:
       - key: DATABASE_URL
         value: postgresql://postgres:***REDACTED_PASSWORD***@db.***REDACTED_PROJECT_ID***.supabase.co:5432/postgres
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: nexmem-redis
+          property: connectionString
       - key: SECRET_KEY
         generateValue: true
       - key: DEMO_MODE
@@ -23,5 +28,31 @@ services:
         value: "30"
       - key: PYTHON_VERSION
         value: "3.11.9"
+
+  - type: worker
+    name: nexmem-celery-worker
+    env: python
+    plan: free
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "celery -A app.celery_app.celery_app worker --loglevel=info --concurrency=2"
+    envVars:
+      - key: DATABASE_URL
+        value: postgresql://postgres:***REDACTED_PASSWORD***@db.***REDACTED_PROJECT_ID***.supabase.co:5432/postgres
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: nexmem-redis
+          property: connectionString
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: ENVIRONMENT
+        value: "production"
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+
+  - type: redis
+    name: nexmem-redis
+    plan: free
+    ipAllowList: []
 
 databases: []

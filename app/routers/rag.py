@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import time
+import structlog
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Depends
@@ -15,7 +16,7 @@ from app.models.user import User
 from app.services.retriever import get_retrieval_context
 from app.services.reranker import get_top_context
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 router = APIRouter(prefix="", tags=["rag"])
 
@@ -134,8 +135,20 @@ async def rag_chat(
             reply = llm_result["reply"]
             prompt_tokens = llm_result.get("prompt_tokens", 0)
             completion_tokens = llm_result.get("completion_tokens", 0)
+            
+            # Task 4.4: Cost/Token Tracking
+            logger.info(
+                "llm_token_usage",
+                app_id=current_user.app_id,
+                user_id=user_id,
+                endpoint="rag_chat_demo",
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                model=settings.openai_llm_model,
+                latency_ms=llm_result.get("latency_ms", 0)
+            )
         except Exception as e:
-            logger.warning(f"LLM generation failed, using demo response: {e}")
+            logger.warning("llm_generation_failed", error=str(e), user_id=user_id)
             reply = _generate_demo_reply(message, episodic_context, semantic_context, procedural_context)
             prompt_tokens = len(message.split()) * 2
             completion_tokens = len(reply.split()) * 2
@@ -249,8 +262,20 @@ async def rag_chat(
             graph_context=graph_context,
         )
         reply, prompt_tokens, completion_tokens = llm_result["reply"], llm_result.get("prompt_tokens", 0), llm_result.get("completion_tokens", 0)
+        
+        # Task 4.4: Cost/Token Tracking
+        logger.info(
+            "llm_token_usage",
+            app_id=current_user.app_id,
+            user_id=user_id,
+            endpoint="rag_chat_production",
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            model=settings.openai_llm_model,
+            latency_ms=llm_result.get("latency_ms", 0)
+        )
     except Exception as e:
-        logger.warning(f"LLM service error, using demo fallback: {str(e)}")
+        logger.warning("llm_service_error", error=str(e), user_id=user_id)
         reply = _generate_demo_reply(message, episodic_context, semantic_context, procedural_context)
         prompt_tokens = len(message.split()) * 2
         completion_tokens = len(reply.split()) * 2

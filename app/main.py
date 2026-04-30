@@ -21,6 +21,8 @@ from jose import JWTError, jwt
 import time
 import logging
 import uuid
+import sentry_sdk
+from prometheus_fastapi_instrumentator import Instrumentator
 
 # Configure JSON logging once at startup
 configure_logging()
@@ -32,6 +34,16 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     """Application lifespan — runs on startup and shutdown."""
     settings.validate_production()
+    
+    # Task 4.3: Initialize Sentry if DSN is provided
+    if settings.sentry_dsn:
+        sentry_sdk.init(
+            dsn=settings.sentry_dsn,
+            traces_sample_rate=1.0,
+            profiles_sample_rate=1.0,
+            environment=settings.environment
+        )
+        logger.info("Sentry integration initialized.")
     if settings.demo_mode:
         print("=" * 60)
         print("AI Memory Layer - DEMO MODE")
@@ -97,6 +109,9 @@ app = FastAPI(
 
 # Rate limiting middleware (60 req/min per IP)
 app.add_middleware(RateLimitMiddleware, requests_per_minute=60)
+
+# Task 4.2: Prometheus metrics instrumentator
+Instrumentator().instrument(app).expose(app, endpoint="/metrics")
 
 # CORS middleware for frontend access
 app.add_middleware(
