@@ -7,6 +7,7 @@ from typing import Optional, List
 from sqlalchemy import (
     Column, String, Text, Boolean, Float,
     DateTime, ForeignKey, Index, CheckConstraint,
+    UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import UUID, JSONB, ARRAY, TSVECTOR
 from sqlalchemy.orm import relationship, Mapped, mapped_column
@@ -116,11 +117,10 @@ class ProceduralMemory(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
-    # unique=True: one procedural profile per user
-    user_id = Column(UUID(as_uuid=True), nullable=False, unique=True, index=True)
+    user_id = Column(UUID(as_uuid=True), nullable=False, index=True)
     app_id = _app_id_col()  # Optional app_id for multi-app scoping
     settings: Mapped[dict] = mapped_column(JSONB, default=dict)
-    workflows: Mapped[dict] = mapped_column(JSONB, default=list)
+    workflows: Mapped[List[dict]] = mapped_column(JSONB, default=list)
     store_procedural: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True
     )
@@ -130,6 +130,10 @@ class ProceduralMemory(Base):
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=datetime.utcnow
+    )
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "app_id", name="uq_procedural_user_app"),
     )
 
 
@@ -177,6 +181,7 @@ class KnowledgeEdge(Base):
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     user_id = _user_id_col()
+    app_id = _app_id_col()
     from_node_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("knowledge_nodes.id", ondelete="CASCADE"),

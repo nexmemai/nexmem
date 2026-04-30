@@ -1,80 +1,75 @@
 """Tests for Phase 1: Auth Enforcement."""
 
+import os
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, text
-from sqlalchemy.orm import sessionmaker
 from app.main import app
-from app.database import get_db
-from app.models.user import User, APIKey
-from app.core.security import get_password_hash
 import uuid
 
 client = TestClient(app)
+pytestmark = pytest.mark.skipif(
+    os.getenv("RUN_DB_TESTS") != "1",
+    reason="requires live PostgreSQL/Supabase database; set RUN_DB_TESTS=1",
+)
 
 # Test user data
-TEST_USER_ID = str(uuid.uuid4())
-TEST_USER_EMAIL = "test@example.com"
+TEST_USER_ID = None
+TEST_USER_EMAIL = f"test_{uuid.uuid4().hex}@example.com"
 TEST_USER_PASSWORD = "testpassword123"
 
 
 @pytest.fixture(scope="module")
 def test_user():
-    """Create a test user."""
-    from app.database import engine
-    from sqlalchemy.orm import Session
-    
-    # Create tables
-    from app.models.memory import Base
-    Base.metadata.create_all(bind=engine)
-    
-    # Create user
-    with Session(engine) as db:
-        user = User(
-            email=TEST_USER_EMAIL,
-            hashed_password=get_password_hash(TEST_USER_PASSWORD),
-            is_active=True,
+    """Create a test user through the public API."""
+    response = client.post(
+        "/api/v1/auth/register",
+        json={"email": TEST_USER_EMAIL, "password": TEST_USER_PASSWORD},
+    )
+    assert response.status_code in (201, 400)
+    if response.status_code == 201:
+        user = response.json()
+    else:
+        login = client.post(
+            "/api/v1/auth/login",
+            json={"email": TEST_USER_EMAIL, "password": TEST_USER_PASSWORD},
         )
-        db.add(user)
-        db.commit()
-        db.refresh(user)
-        yield user
-        
-        # Cleanup
-        db.query(User).filter(User.id == user.id).delete()
-        db.commit()
+        assert login.status_code == 200
+        me = client.get(
+            "/api/v1/auth/me",
+            headers={"Authorization": f"Bearer {login.json()['access_token']}"},
+        )
+        user = me.json()
+    global TEST_USER_ID
+    TEST_USER_ID = user["id"]
+    yield user
 
 
 @pytest.fixture(scope="module")
 def auth_headers(test_user):
     """Get auth headers for test user."""
-    from app.core.security import create_access_token
-    token = create_access_token(data={"sub": str(test_user.id)})
-    return {"Authorization": f"Bearer {token["access_token"]}"}
+    return _auth_headers()
+
+
+def _auth_headers():
+    response = client.post(
+        "/api/v1/auth/login",
+        json={"email": TEST_USER_EMAIL, "password": TEST_USER_PASSWORD},
+    )
+    assert response.status_code == 200
+    token = response.json()["access_token"]
+    return {"Authorization": f"Bearer {token}"}
 
 
 @pytest.fixture(scope="module")
 def api_key_headers(test_user):
     """Get API key headers for test user."""
-    from app.core.security import get_password_hash
-    import secrets
-    
-    raw_key = f"mem_{secrets.token_urlsafe(32)}"
-    key_hash = get_password_hash(raw_key)
-    
-    from app.database import engine
-    from sqlalchemy.orm import Session
-    with Session(engine) as db:
-        api_key = APIKey(
-            user_id=test_user.id,
-            key_hash=key_hash,
-            name="Test Key",
-            is_active=True,
-        )
-        db.add(api_key)
-        db.commit()
-    
-    return {"Authorization": f"ApiKey {raw_key}"}
+    response = client.post(
+        "/api/v1/auth/api-keys",
+        json={"name": "Test Key"},
+        headers=_auth_headers(),
+    )
+    assert response.status_code == 201
+    return {"Authorization": f"ApiKey {response.json()['api_key']}"}
 
 
 class TestAuthEnforcement:

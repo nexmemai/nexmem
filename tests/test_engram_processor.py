@@ -1,8 +1,14 @@
 """Tests for Engram Processor."""
 
+import os
 import pytest
 from app.services.engram_processor import EngramProcessor, decay_score
 from datetime import datetime, timedelta, timezone
+
+pytestmark = pytest.mark.skipif(
+    os.getenv("RUN_ML_TESTS") != "1",
+    reason="requires local spaCy and sentence-transformer models; set RUN_ML_TESTS=1",
+)
 
 
 @pytest.fixture

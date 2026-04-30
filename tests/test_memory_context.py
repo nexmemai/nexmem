@@ -1,6 +1,12 @@
 """Tests for memory context endpoint."""
 
+import os
 import pytest
+
+pytestmark = pytest.mark.skipif(
+    os.getenv("RUN_DB_TESTS") != "1",
+    reason="requires live PostgreSQL/Supabase database; set RUN_DB_TESTS=1",
+)
 
 
 @pytest.mark.asyncio

@@ -1,10 +1,12 @@
 """Memory router - Unified context API and episode write endpoint."""
 
 from typing import Optional, List, Dict, Any
+import asyncio
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
+import logging
 
 from app.database import get_db
 from app.models.user import User
@@ -13,6 +15,7 @@ from app.services.embedder import EmbeddingService
 from app.services.engram_processor import engram_processor, decay_score
 
 router = APIRouter(prefix="/memory", tags=["memory"])
+logger = logging.getLogger(__name__)
 
 
 class ContextRequest(BaseModel):
@@ -126,16 +129,16 @@ async def get_memory_context(
     embedding_service = EmbeddingService()
     query_embedding = None
     try:
-        query_embedding = await embedding_service.embed(body.query)
-    except Exception:
-        pass
+        query_embedding = await asyncio.to_thread(embedding_service.embed, body.query)
+    except Exception as exc:
+        logger.warning("Embedding failed for context query: %s", exc)
 
     semantic_hits = []
     if query_embedding:
         embedding_str = "[" + ",".join(str(x) for x in query_embedding) + "]"
         sql_text = """
                 SELECT id, content_preview, metadata,
-                       1 - (vector <=> :vec::vector) as similarity
+                       1 - (vector <=> CAST(:vec AS vector)) as similarity
                 FROM semantic_memory
                 WHERE user_id = :uid
         """
@@ -143,14 +146,11 @@ async def get_memory_context(
 
         # Filter by app_id if provided
         if body.app_id:
-            try:
-                sql_text += " AND app_id = :app_id"
-                params["app_id"] = body.app_id
-            except ValueError:
-                pass
+            sql_text += " AND app_id = :app_id"
+            params["app_id"] = body.app_id
 
         sql_text += """
-                ORDER BY vector <=> :vec::vector
+                ORDER BY vector <=> CAST(:vec AS vector)
                 LIMIT :k
             """
         result = await db.execute(text(sql_text), params)
@@ -285,12 +285,12 @@ async def write_episode(
 
     embedding_service = EmbeddingService()
     try:
-        embedding = await embedding_service.embed(body.content)
+        embedding = await asyncio.to_thread(embedding_service.embed, body.content)
         embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
         result = await db.execute(
             text("""
                 INSERT INTO semantic_memory (user_id, episodic_id, vector, content_preview, metadata, app_id)
-                VALUES (:uid, :epi_id, :vec::vector, :preview, :meta, :app_id)
+                VALUES (:uid, :epi_id, CAST(:vec AS vector), :preview, :meta, :app_id)
                 RETURNING id
             """),
             {
@@ -304,8 +304,8 @@ async def write_episode(
         )
         row = result.fetchone()
         semantic_id = str(row[0]) if row else None
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Semantic memory write failed for episode %s: %s", episodic_id, exc)
 
     engram = await engram_processor.process_async(body.content, user_id)
     engram_id = engram.get("engram_id")
@@ -323,7 +323,7 @@ async def write_episode(
                                      actions, objects, entities, negated_actions,
                                      salience_scores, connections, original_length,
                                      compressed_length, compression_ratio, source_type)
-                VALUES (:uid, :eid, :text, :emb::vector, :actions, :objects, :entities,
+                VALUES (:uid, :eid, :text, CAST(:emb AS vector), :actions, :objects, :entities,
                         :neg_actions, :salience, :conn, :orig_len, :comp_len, :ratio, 'episodic')
                 RETURNING id
             """),
@@ -343,8 +343,8 @@ async def write_episode(
                 "ratio": engram.get("compression_ratio", 0.0),
             }
         )
-    except Exception as e:
-        pass
+    except Exception as exc:
+        logger.warning("Engram persistence failed for episode %s: %s", episodic_id, exc)
 
     for entity in engram.get("entities", []):
         result = await db.execute(

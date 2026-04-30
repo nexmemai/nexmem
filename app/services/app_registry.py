@@ -38,18 +38,16 @@ async def register_app(
     # This is a simplified version
     
     # Generate an API key for this app
-    from app.core.security import get_password_hash
-    import secrets
-    
-    raw_key = f"app_{secrets.token_urlsafe(32)}"
-    key_hash = get_password_hash(raw_key)
+    from app.core.security import generate_api_key
+
+    raw_key, key_hash = generate_api_key()
     
     # Create API key scoped to this app
     api_key = APIKey(
         user_id=uuid.UUID(user_id),
         key_hash=key_hash,
         name=app_name,
-        scopes="read,write",
+        scopes=f"read,write,app:{app_id}",
         is_active=True,
     )
     db.add(api_key)
@@ -83,6 +81,7 @@ async def get_user_apps(
     return [
         {
             "key_id": str(k.id),
+            "app_id": _app_id_from_scopes(k.scopes),
             "app_name": k.name,
             "scopes": k.scopes,
             "is_active": k.is_active,
@@ -103,9 +102,12 @@ async def validate_app_access(
     In a full implementation, this would check an App model.
     For now, we check if the API key name matches.
     """
-    # This is a simplified validation
-    # In production, you'd query an App model with user_id and app_id
-    return True  # Simplified for now
+    result = await db.execute(
+        select(APIKey)
+        .where(APIKey.user_id == uuid.UUID(user_id))
+        .where(APIKey.is_active == True)
+    )
+    return any(_app_id_from_scopes(key.scopes) == app_id for key in result.scalars())
 
 
 async def revoke_app(
@@ -157,3 +159,13 @@ def add_app_id_to_record(record, app_id: Optional[str]):
             record.app_id = uuid.UUID(app_id)
         except ValueError:
             logger.warning(f"Invalid app_id format: {app_id}")
+
+
+def _app_id_from_scopes(scopes: str | None) -> Optional[str]:
+    if not scopes:
+        return None
+    for scope in scopes.split(","):
+        scope = scope.strip()
+        if scope.startswith("app:"):
+            return scope.removeprefix("app:")
+    return None

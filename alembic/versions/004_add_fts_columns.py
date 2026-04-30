@@ -9,6 +9,11 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import TSVECTOR
 
+revision = "004_add_fts_columns"
+down_revision = "003_add_consolidated_at"
+branch_labels = None
+depends_on = None
+
 
 def upgrade():
     # Add text_search column to episodic_memory

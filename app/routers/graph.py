@@ -1,9 +1,11 @@
 """Knowledge graph (associative memory) API endpoints."""
 
+import uuid
 from collections import deque
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query, Depends
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.database import get_db
@@ -14,6 +16,25 @@ from app.models.user import User
 router = APIRouter(prefix="/agents", tags=["associative"])
 
 
+class NodeCreateRequest(BaseModel):
+    label: str
+    type: str
+    properties: dict = Field(default_factory=dict)
+
+
+class EdgeCreateRequest(BaseModel):
+    from_node_id: str
+    to_node_id: str
+    relation: str
+    weight: float = 1.0
+    metadata: dict = Field(default_factory=dict)
+
+
+class PathRequest(BaseModel):
+    from_node_id: str
+    to_node_id: str
+
+
 # ==========================================
 # Node Endpoints
 # ==========================================
@@ -21,9 +42,7 @@ router = APIRouter(prefix="/agents", tags=["associative"])
 @router.post("/{user_id}/graph/nodes")
 async def create_node(
     user_id: str,
-    label: str,
-    type: str,
-    properties: dict = {},
+    body: NodeCreateRequest,
     app_id: Optional[str] = Query(default=None, description="App ID for scoping"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -35,13 +54,13 @@ async def create_node(
     
     if settings.demo_mode:
         from app.demo_db import create_node as demo_create_node
-        return demo_create_node(str(current_user.id), label, type, properties)
+        return demo_create_node(str(current_user.id), body.label, body.type, body.properties)
 
     from app.models.memory import KnowledgeNode
     
     record = KnowledgeNode(
-        user_id=str(current_user.id), label=label, type=type,
-        properties=properties, store_associative=True,
+        user_id=str(current_user.id), label=body.label, type=body.type,
+        properties=body.properties, store_associative=True,
     )
     # Add app_id if provided
     if app_id:
@@ -152,11 +171,7 @@ async def delete_node(
 @router.post("/{user_id}/graph/edges")
 async def create_edge(
     user_id: str,
-    from_node_id: str,
-    to_node_id: str,
-    relation: str,
-    weight: float = 1.0,
-    metadata: dict = {},
+    body: EdgeCreateRequest,
     app_id: Optional[str] = Query(default=None, description="App ID for scoping"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -168,27 +183,34 @@ async def create_edge(
     
     if settings.demo_mode:
         from app.demo_db import create_edge as demo_create_edge, get_node
-        if not get_node(str(current_user.id), from_node_id) or not get_node(str(current_user.id), to_node_id):
+        if not get_node(str(current_user.id), body.from_node_id) or not get_node(str(current_user.id), body.to_node_id):
             raise HTTPException(status_code=404, detail="One or both nodes not found")
         try:
-            return demo_create_edge(str(current_user.id), from_node_id, to_node_id, relation, weight, metadata)
+            return demo_create_edge(
+                str(current_user.id),
+                body.from_node_id,
+                body.to_node_id,
+                body.relation,
+                body.weight,
+                body.metadata,
+            )
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
 
     from app.models.memory import KnowledgeEdge, KnowledgeNode
 
-    from_node = await db.get(KnowledgeNode, from_node_id)
-    to_node = await db.get(KnowledgeNode, to_node_id)
+    from_node = await db.get(KnowledgeNode, body.from_node_id)
+    to_node = await db.get(KnowledgeNode, body.to_node_id)
     if not from_node or not to_node:
         raise HTTPException(status_code=404, detail="One or both nodes not found")
     if str(from_node.user_id) != str(current_user.id) or str(to_node.user_id) != str(current_user.id):
         raise HTTPException(status_code=403, detail="Nodes do not belong to this user")
-    if from_node_id == to_node_id:
+    if body.from_node_id == body.to_node_id:
         raise HTTPException(status_code=400, detail="Self-loops are not allowed")
 
     record = KnowledgeEdge(
-        user_id=str(current_user.id), from_node_id=from_node_id, to_node_id=to_node_id,
-        relation=relation, weight=weight, extra_metadata=metadata,
+        user_id=str(current_user.id), from_node_id=body.from_node_id, to_node_id=body.to_node_id,
+        relation=body.relation, weight=body.weight, extra_metadata=body.metadata,
     )
     # Add app_id if provided
     if app_id:
@@ -257,8 +279,7 @@ async def list_edges(
 @router.post("/{user_id}/graph/path")
 async def find_path(
     user_id: str,
-    from_node_id: str,
-    to_node_id: str,
+    body: PathRequest,
     max_hops: int = Query(default=3, ge=1, le=10),
     app_id: Optional[str] = Query(default=None, description="Filter by app ID"),
     current_user: User = Depends(get_current_user),
@@ -271,15 +292,15 @@ async def find_path(
     
     if settings.demo_mode:
         from app.demo_db import find_path as demo_find_path, get_node
-        if not get_node(str(current_user.id), from_node_id) or not get_node(str(current_user.id), to_node_id):
+        if not get_node(str(current_user.id), body.from_node_id) or not get_node(str(current_user.id), body.to_node_id):
             raise HTTPException(status_code=404, detail="One or both nodes not found")
-        return demo_find_path(str(current_user.id), from_node_id, to_node_id, max_hops)
+        return demo_find_path(str(current_user.id), body.from_node_id, body.to_node_id, max_hops)
 
     from app.models.memory import KnowledgeNode, KnowledgeEdge
     from sqlalchemy import select
 
-    from_node = await db.get(KnowledgeNode, from_node_id)
-    to_node = await db.get(KnowledgeNode, to_node_id)
+    from_node = await db.get(KnowledgeNode, body.from_node_id)
+    to_node = await db.get(KnowledgeNode, body.to_node_id)
     if not from_node or not to_node:
         raise HTTPException(status_code=404, detail="One or both nodes not found")
 
@@ -296,12 +317,12 @@ async def find_path(
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid app_id format")
 
-    visited = {from_node_id}
-    queue = deque([(from_node_id, [from_node_id])])
+    visited = {body.from_node_id}
+    queue = deque([(body.from_node_id, [body.from_node_id])])
 
     while queue:
         current_id, path = queue.popleft()
-        if current_id == to_node_id:
+        if current_id == body.to_node_id:
             node_details = []
             for nid in path:
                 node = await db.get(KnowledgeNode, nid)

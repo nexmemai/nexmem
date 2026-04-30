@@ -1,10 +1,12 @@
 """Semantic memory API endpoints with vector search."""
 
+import asyncio
 import logging
 from typing import Optional, List, Dict, Any
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, Depends
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc, func, text
 
@@ -19,15 +21,23 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/agents", tags=["semantic"])
 
 
+class SemanticCreateRequest(BaseModel):
+    content: str
+    episodic_id: Optional[str] = None
+    metadata: dict = Field(default_factory=dict)
+    summary: Optional[str] = None
+    embedding_model: str = "text-embedding-3-small"
+    index_semantic: bool = True
+
+
+class SemanticSearchRequest(BaseModel):
+    query: str
+
+
 @router.post("/{user_id}/semantics", response_model=dict)
 async def create_semantic(
     user_id: str,
-    content: str,
-    episodic_id: Optional[str] = None,
-    metadata: dict = {},
-    summary: Optional[str] = None,
-    embedding_model: str = "text-embedding-3-small",
-    index_semantic: bool = True,
+    body: SemanticCreateRequest,
     app_id: Optional[str] = Query(default=None, description="App ID for scoping"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -37,7 +47,7 @@ async def create_semantic(
     if str(current_user.id) != user_id:
         raise HTTPException(status_code=403, detail="User ID mismatch")
     
-    if not index_semantic:
+    if not body.index_semantic:
         return {"id": None, "skipped": True, "reason": "index_semantic=false"}
 
     # Validate path user_id matches authenticated user
@@ -48,7 +58,7 @@ async def create_semantic(
         from app.demo_db import create_semantic as demo_create
         
         try:
-            vector = embedder.embed(content)
+            vector = await asyncio.to_thread(embedder.embed, body.content)
         except Exception as e:
             logger.warning(f"Embedding failed, using random vector: {e}")
             vector = embedder.random_vector()
@@ -56,30 +66,30 @@ async def create_semantic(
         return demo_create(
             user_id=str(current_user.id),
             vector=vector,
-            episodic_id=episodic_id,
-            embedding_model=embedding_model,
-            summary=summary,
-            content_preview=content[:500],
-            metadata=metadata,
-            index_semantic=index_semantic,
+            episodic_id=body.episodic_id,
+            embedding_model=body.embedding_model,
+            summary=body.summary,
+            content_preview=body.content[:500],
+            metadata=body.metadata,
+            index_semantic=body.index_semantic,
         )
 
     from app.models.memory import SemanticMemory
     
     try:
-        vector = embedder.embed(content)
+        vector = await asyncio.to_thread(embedder.embed, body.content)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Embedding service error: {str(e)}")
     
     record = SemanticMemory(
         user_id=str(current_user.id),
-        episodic_id=episodic_id,
+        episodic_id=body.episodic_id,
         vector=vector,
-        embedding_model=embedding_model,
-        summary=summary,
-        content_preview=content[:500],
-        extra_metadata=metadata,
-        index_semantic=index_semantic,
+        embedding_model=body.embedding_model,
+        summary=body.summary,
+        content_preview=body.content[:500],
+        extra_metadata=body.metadata,
+        index_semantic=body.index_semantic,
     )
     # Add app_id if provided
     if app_id:
@@ -96,7 +106,7 @@ async def create_semantic(
 @router.post("/{user_id}/semantic/search", response_model=List[Dict[str, Any]])
 async def semantic_search(
     user_id: str,
-    query: str,
+    body: SemanticSearchRequest,
     k: int = Query(default=5, ge=1, le=50),
     app_id: Optional[str] = Query(default=None, description="Filter by app ID"),
     current_user: User = Depends(get_current_user),
@@ -111,7 +121,7 @@ async def semantic_search(
         from app.demo_db import search_semantic
 
         try:
-            query_vector = embedder.embed(query)
+            query_vector = await asyncio.to_thread(embedder.embed, body.query)
         except Exception as e:
             logger.warning(f"Embedding failed for search: {e}")
             query_vector = embedder.random_vector()
@@ -129,14 +139,14 @@ async def semantic_search(
         ]
 
     try:
-        query_vector = embedder.embed(query)
+        query_vector = await asyncio.to_thread(embedder.embed, body.query)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Embedding service error: {str(e)}")
     
     # Build SQL with optional app_id filter
     sql_text = """
         SELECT id, summary, content_preview, metadata,
-               1 - (vector <=> :query_vec::vector) AS similarity
+               1 - (vector <=> CAST(:query_vec AS vector)) AS similarity
         FROM semantic_memory
         WHERE user_id = :uid AND index_semantic = TRUE
     """
@@ -150,7 +160,7 @@ async def semantic_search(
             raise HTTPException(status_code=400, detail="Invalid app_id format")
     
     sql_text += """
-        ORDER BY vector <=> :query_vec::vector
+        ORDER BY vector <=> CAST(:query_vec AS vector)
         LIMIT :k
     """
     
@@ -216,6 +226,8 @@ async def list_semantics(
             raise HTTPException(status_code=400, detail="Invalid app_id format")
     
     query = query.order_by(desc(SemanticMemory.created_at)).limit(limit)
+    result = await db.execute(query)
+    records = result.scalars().all()
     return [
         {
             "id": str(r.id),
@@ -260,5 +272,5 @@ async def count_semantics(
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid app_id format")
     
-    count = await db.execute(query)
-    return {"user_id": str(current_user.id), "count": count}
+    result = await db.execute(query)
+    return {"user_id": str(current_user.id), "count": result.scalar() or 0}

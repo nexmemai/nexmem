@@ -1,5 +1,6 @@
 """Hybrid Retrieval Service - Combines vector, keyword, and graph search."""
 
+import asyncio
 import logging
 import uuid
 from typing import List, Dict, Any, Optional, Tuple
@@ -83,7 +84,7 @@ async def vector_search(
 ) -> List[Dict[str, Any]]:
     """Search semantic memories using vector similarity."""
     try:
-        query_vector = embedder.embed(query)
+        query_vector = await asyncio.to_thread(embedder.embed, query)
     except Exception as e:
         logger.error(f"Embedding failed: {e}")
         return []
@@ -91,7 +92,7 @@ async def vector_search(
     # Build SQL with optional app_id filter
     sql_text = """
         SELECT id, summary, content_preview, metadata,
-               1 - (vector <=> :query_vec::vector) AS similarity
+               1 - (vector <=> CAST(:query_vec AS vector)) AS similarity
         FROM semantic_memory
         WHERE user_id = :uid AND index_semantic = TRUE
     """
@@ -105,7 +106,7 @@ async def vector_search(
             logger.warning(f"Invalid app_id format: {app_id}")
     
     sql_text += """
-        ORDER BY vector <=> :query_vec::vector
+        ORDER BY vector <=> CAST(:query_vec AS vector)
         LIMIT :k
     """
     

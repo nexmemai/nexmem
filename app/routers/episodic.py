@@ -5,6 +5,7 @@ from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc, func
 
@@ -16,14 +17,19 @@ from app.models.user import User
 router = APIRouter(prefix="/agents", tags=["episodic"])
 
 
+class EpisodeCreateRequest(BaseModel):
+    session_id: str
+    content: str
+    timestamp: Optional[datetime] = None
+    metadata: dict = Field(default_factory=dict)
+    tags: list[str] = Field(default_factory=list)
+    store_episodic: bool = True
+
+
 @router.post("/{user_id}/episodes", response_model=dict)
 async def create_episode(
     user_id: str,
-    session_id: str,
-    content: str,
-    timestamp: Optional[datetime] = None,
-    metadata: dict = {},
-    tags: list[str] = [],
+    body: EpisodeCreateRequest,
     store_episodic: bool = True,
     app_id: Optional[str] = Query(default=None, description="App ID for scoping"),
     current_user: User = Depends(get_current_user),
@@ -34,30 +40,31 @@ async def create_episode(
     if str(current_user.id) != user_id:
         raise HTTPException(status_code=403, detail="User ID mismatch")
     
-    if not store_episodic:
+    effective_store = body.store_episodic and store_episodic
+    if not effective_store:
         return {"id": None, "skipped": True, "reason": "store_episodic=false"}
     
     if settings.demo_mode:
-        from app.demo_db import create_episode as demo_create
+        from app.demo_db import create_episodic as demo_create
         return demo_create(
             user_id=str(current_user.id),
-            session_id=session_id,
-            content=content,
-            metadata=metadata,
-            tags=tags,
-            store_episodic=store_episodic,
+            session_id=body.session_id,
+            content=body.content,
+            metadata=body.metadata,
+            tags=body.tags,
+            store_episodic=effective_store,
         )
     
     from app.models.memory import EpisodicMemory
     
     record = EpisodicMemory(
         user_id=str(current_user.id),
-        session_id=session_id,
-        timestamp=timestamp or datetime.utcnow(),
-        content=content,
-        extra_metadata=metadata,
-        tags=tags,
-        store_episodic=store_episodic,
+        session_id=body.session_id,
+        timestamp=body.timestamp or datetime.utcnow(),
+        content=body.content,
+        extra_metadata=body.metadata,
+        tags=body.tags,
+        store_episodic=effective_store,
     )
     # Add app_id if provided
     if app_id:
@@ -147,7 +154,7 @@ async def delete_episode(
         raise HTTPException(status_code=403, detail="User ID mismatch")
     
     if settings.demo_mode:
-        from app.demo_db import delete_episode as demo_delete
+        from app.demo_db import delete_episodic as demo_delete
         if not demo_delete(user_id, episode_id):
             raise HTTPException(status_code=404, detail="Episode not found")
         return {"deleted": True, "id": episode_id}
@@ -180,8 +187,8 @@ async def count_episodes(
         raise HTTPException(status_code=403, detail="User ID mismatch")
     
     if settings.demo_mode:
-        from app.demo_db import count_episode
-        return {"user_id": user_id, "count": count_episode(user_id)}
+        from app.demo_db import count_episodic
+        return {"user_id": user_id, "count": count_episodic(user_id)}
 
     from app.models.memory import EpisodicMemory
     

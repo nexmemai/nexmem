@@ -9,6 +9,11 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import UUID
 
+revision = "005_add_app_id_procedural"
+down_revision = "004_add_fts_columns"
+branch_labels = None
+depends_on = None
+
 
 def upgrade():
     # Add app_id column to procedural_memory

@@ -3,6 +3,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 from datetime import datetime
+import asyncio
 
 from app.database import get_db
 from app.config import settings
@@ -38,7 +39,7 @@ async def readiness(
         try:
             from app.services.embedder import EmbeddingService
             service = EmbeddingService()
-            test = await service.embed("health check")
+            test = await asyncio.to_thread(service.embed, "health check")
             if len(test) == 0:
                 embedding_status = "error: empty embedding"
         except Exception as e:

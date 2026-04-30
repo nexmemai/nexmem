@@ -24,6 +24,7 @@ logger = logging.getLogger("ai_memory")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan — runs on startup and shutdown."""
+    settings.validate_production()
     if settings.demo_mode:
         print("=" * 60)
         print("AI Memory Layer - DEMO MODE")
@@ -44,12 +45,8 @@ async def lifespan(app: FastAPI):
         print("=" * 60)
     else:
         print("Starting with PostgreSQL connection...")
-        from app.database import engine, async_session
-        from app.models.memory import Base
+        from app.database import engine
 
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        
         # Start consolidation scheduler
         from app.services.scheduler import start_scheduler
         start_scheduler()
@@ -76,7 +73,7 @@ app.add_middleware(RateLimitMiddleware, requests_per_minute=60)
 # CORS middleware for frontend access
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

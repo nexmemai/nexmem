@@ -46,6 +46,26 @@ class Settings(BaseSettings):
     # ── Demo mode (in-memory storage, no PostgreSQL required) ─────────────────
     demo_mode: bool = True
 
+    def validate_production(self) -> None:
+        """Fail fast on unsafe production settings."""
+        if self.environment != "production":
+            return
+
+        errors = []
+        if self.demo_mode:
+            errors.append("DEMO_MODE must be false in production")
+        if self.secret_key == "local-dev-secret-change-this-before-production":
+            errors.append("SECRET_KEY must be set to a strong production secret")
+        if not self.openai_api_key or self.openai_api_key == "sk-placeholder":
+            errors.append("OPENAI_API_KEY must be set in production")
+        if self.allowed_origins == ["*"] or "*" in self.allowed_origins:
+            errors.append("ALLOWED_ORIGINS must not be '*' in production")
+        if "localhost" in self.database_url:
+            errors.append("DATABASE_URL must point at a production database")
+
+        if errors:
+            raise RuntimeError("Invalid production configuration: " + "; ".join(errors))
+
     class Config:
         # Reads .env first, then .env.local for local overrides
         env_file = [".env", ".env.local"]

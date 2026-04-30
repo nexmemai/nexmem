@@ -1,11 +1,13 @@
 """RAG (Retrieval-Augmented Generation) API endpoints."""
 
+import asyncio
 import logging
 import time
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, text
 from app.database import get_db
 from app.config import settings
 from app.core.deps import get_current_user
@@ -64,8 +66,6 @@ def _generate_demo_reply(
 
 from app.schemas.memory import RAGRequest, RAGResponse
 
-from app.schemas.memory import RAGRequest, RAGResponse
-
 @router.post("/rag/chat", response_model=RAGResponse)
 async def rag_chat(
     request: RAGRequest,
@@ -105,7 +105,7 @@ async def rag_chat(
 
         if include_semantic:
             try:
-                query_vector = embedder.embed(message)
+                query_vector = await asyncio.to_thread(embedder.embed, message)
             except Exception:
                 query_vector = embedder.random_vector()
             results = search_semantic(user_id, query_vector, top_k)
@@ -123,7 +123,8 @@ async def rag_chat(
 
         try:
             from app.services.llm import llm_service
-            llm_result = llm_service.generate_rag_response(
+            llm_result = await asyncio.to_thread(
+                llm_service.generate_rag_response,
                 user_message=message,
                 episodic_context=episodic_context,
                 semantic_context=semantic_context,
@@ -175,7 +176,7 @@ async def rag_chat(
         }
 
     # Production mode with PostgreSQL
-    from app.models.memory import EpisodicMemory, ProceduralMemory
+    from app.models.memory import EpisodicMemory, ProceduralMemory, KnowledgeNode
     from app.services.embedder import embedder
     from app.services.llm import llm_service
 
@@ -209,11 +210,11 @@ async def rag_chat(
         
         if include_semantic:
             try:
-                query_vector = embedder.embed(message)
+                query_vector = await asyncio.to_thread(embedder.embed, message)
                 sql = text("""
                     SELECT content_preview, summary FROM semantic_memory
                     WHERE user_id = :uid AND index_semantic = TRUE
-                    ORDER BY vector <=> :query_vec::vector LIMIT :k
+                    ORDER BY vector <=> CAST(:query_vec AS vector) LIMIT :k
                 """)
                 result = await db.execute(sql, {"query_vec": str(query_vector), "uid": user_id, "k": top_k})
                 semantic_context = [row.summary or row.content_preview or "" for row in result.fetchall()]
@@ -241,7 +242,8 @@ async def rag_chat(
             procedural_context = {"settings": proc.settings, "workflows": proc.workflows}
 
     try:
-        llm_result = llm_service.generate_rag_response(
+        llm_result = await asyncio.to_thread(
+            llm_service.generate_rag_response,
             user_message=message, episodic_context=episodic_context,
             semantic_context=semantic_context, procedural_context=procedural_context,
             graph_context=graph_context,
@@ -257,7 +259,7 @@ async def rag_chat(
     new_episode = EpisodicMemory(
         user_id=user_id, session_id=session,
         content=f"User: {message}\nAssistant: {reply}",
-        metadata={"source": "rag_chat", "model": settings.openai_llm_model},
+        extra_metadata={"source": "rag_chat", "model": settings.openai_llm_model},
         tags=["rag_interaction"], store_episodic=True,
     )
     db.add(new_episode)

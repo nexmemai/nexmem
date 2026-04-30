@@ -3,7 +3,6 @@
 import logging
 from typing import List, Dict, Any, Optional
 import asyncio
-from sentence_transformers import CrossEncoder
 
 from app.config import settings
 
@@ -17,6 +16,8 @@ def get_reranker():
     """Lazy-load the Cross-Encoder model."""
     global _reranker
     if _reranker is None:
+        from sentence_transformers import CrossEncoder
+
         logger.info(f"Loading Cross-Encoder model: {MODEL_NAME}")
         _reranker = CrossEncoder(MODEL_NAME)
     return _reranker

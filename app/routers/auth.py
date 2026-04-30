@@ -29,6 +29,11 @@ async def register(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Email or wallet address required"
         )
+    if user_data.email and not user_data.password:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Password required for email registration"
+        )
 
     if user_data.email:
         existing = await db.execute(

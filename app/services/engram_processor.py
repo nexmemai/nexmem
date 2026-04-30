@@ -18,8 +18,6 @@ from typing import Dict, List, Optional, Any
 import uuid
 
 import networkx as nx
-import spacy
-from sentence_transformers import SentenceTransformer
 
 from app.config import settings
 
@@ -28,6 +26,9 @@ class EngramProcessor:
     """Processes text into compressed memory units (engrams)."""
 
     def __init__(self):
+        import spacy
+        from sentence_transformers import SentenceTransformer
+
         self._nlp = spacy.load("en_core_web_sm")
         self._embed_model = SentenceTransformer("all-MiniLM-L6-v2")
         self._graph = nx.Graph()
@@ -317,4 +318,28 @@ def decay_score(created_at: datetime, half_life_days: float = 30.0) -> float:
     return math.exp(-0.693 * age / half_life_days)
 
 
-engram_processor = EngramProcessor()
+class LazyEngramProcessor:
+    """Create the heavy NLP models only when memory processing is first used."""
+
+    def __init__(self):
+        self._instance: Optional[EngramProcessor] = None
+
+    def _get(self) -> EngramProcessor:
+        if self._instance is None:
+            self._instance = EngramProcessor()
+        return self._instance
+
+    async def process_async(self, text: str, user_id: str) -> Dict[str, Any]:
+        return await self._get().process_async(text, user_id)
+
+    def get_compressed_context(self, query: str, user_id: str) -> str:
+        return self._get().get_compressed_context(query, user_id)
+
+    def get_graph_summary(self, user_id: str) -> Dict[str, Any]:
+        return self._get().get_graph_summary(user_id)
+
+    def __getattr__(self, name: str):
+        return getattr(self._get(), name)
+
+
+engram_processor = LazyEngramProcessor()

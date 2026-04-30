@@ -47,7 +47,8 @@ async def summarize_with_llm(
 ) -> str:
     """Use gpt-4o-mini to create concise summary."""
     try:
-        response = llm_service.client.chat.completions.create(
+        response = await asyncio.to_thread(
+            llm_service.client.chat.completions.create,
             model=settings.consolidation_llm_model,
             messages=[
                 {"role": "system", "content": "Summarize the following memory concisely, extracting key facts and insights. Keep under 200 words."},
@@ -105,7 +106,7 @@ async def create_semantic_from_episode(
     """Create semantic memory from consolidated episode."""
     try:
         # Generate embedding for the summary
-        vector = embedder.embed(summary)
+        vector = await asyncio.to_thread(embedder.embed, summary)
         
         semantic = SemanticMemory(
             user_id=str(episode.user_id),

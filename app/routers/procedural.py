@@ -1,14 +1,24 @@
 """Procedural memory API endpoints."""
 
+import uuid
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query, Depends
+from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+
+from app.database import get_db
 from app.core.deps import get_current_user
 from app.models.user import User
-
 from app.config import settings
 
 router = APIRouter(prefix="/agents", tags=["procedural"])
+
+
+class ProceduralUpsertRequest(BaseModel):
+    settings_data: dict = Field(default_factory=dict, alias="settings")
+    workflows: list[dict] = Field(default_factory=list)
 
 
 @router.get("/{user_id}/procedural/settings")
@@ -16,6 +26,7 @@ async def get_procedural(
     user_id: str,
     app_id: Optional[str] = Query(default=None, description="Filter by app ID"),
     current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
     """Get procedural memory (settings and workflows) for a user."""
     # Validate path user_id matches authenticated user
@@ -29,42 +40,37 @@ async def get_procedural(
             raise HTTPException(status_code=404, detail="No procedural memory found")
         return record
 
-    from app.database import get_db
     from app.models.memory import ProceduralMemory
-    from sqlalchemy import select
 
-    async for db in get_db():
-        query = select(ProceduralMemory).where(ProceduralMemory.user_id == str(current_user.id))
-        # Filter by app_id if provided
-        if app_id:
-            try:
-                query = query.where(ProceduralMemory.app_id == uuid.UUID(app_id))
-            except ValueError:
-                raise HTTPException(status_code=400, detail="Invalid app_id format")
-        
-        result = await db.execute(query)
-        record = result.scalar_one_or_none()
-        if not record:
-            raise HTTPException(status_code=404, detail="No procedural memory found")
-        return {
-            "id": str(record.id),
-            "user_id": str(record.user_id),
-            "settings": record.settings,
-            "workflows": record.workflows,
-            "store_procedural": record.store_procedural,
-            "updated_at": record.updated_at.isoformat(),
-            "created_at": record.created_at.isoformat(),
-        }
+    query = select(ProceduralMemory).where(ProceduralMemory.user_id == str(current_user.id))
+    if app_id:
+        try:
+            query = query.where(ProceduralMemory.app_id == uuid.UUID(app_id))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid app_id format")
+
+    result = await db.execute(query)
+    record = result.scalar_one_or_none()
+    if not record:
+        raise HTTPException(status_code=404, detail="No procedural memory found")
+    return {
+        "id": str(record.id),
+        "user_id": str(record.user_id),
+        "settings": record.settings,
+        "workflows": record.workflows,
+        "store_procedural": record.store_procedural,
+        "updated_at": record.updated_at.isoformat(),
+        "created_at": record.created_at.isoformat(),
+    }
 
 
 @router.post("/{user_id}/procedural/settings")
 async def upsert_procedural(
     user_id: str,
-    user_id_body: Optional[str] = None,
-    settings_data: dict = {},
-    workflows: list[dict] = [],
+    body: ProceduralUpsertRequest,
     app_id: Optional[str] = Query(default=None, description="Filter by app ID"),
     current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
     """Create or update procedural memory for a user."""
     # Validate path user_id matches authenticated user
@@ -73,53 +79,49 @@ async def upsert_procedural(
 
     if settings.demo_mode:
         from app.demo_db import upsert_procedural as demo_upsert
-        return demo_upsert(user_id=str(current_user.id), settings=settings_data, workflows=workflows)
-
-    from app.database import get_db
-    from app.models.memory import ProceduralMemory
-    from sqlalchemy import select
-
-    async for db in get_db():
-        query = select(ProceduralMemory).where(
-            ProceduralMemory.user_id == str(current_user.id)
+        return demo_upsert(
+            user_id=str(current_user.id),
+            settings=body.settings_data,
+            workflows=body.workflows,
         )
-        # Filter by app_id if provided
+
+    from app.models.memory import ProceduralMemory
+
+    query = select(ProceduralMemory).where(
+        ProceduralMemory.user_id == str(current_user.id)
+    )
+    if app_id:
+        try:
+            query = query.where(ProceduralMemory.app_id == uuid.UUID(app_id))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid app_id format")
+
+    result = await db.execute(query)
+    record = result.scalar_one_or_none()
+
+    if record:
+        record.settings = body.settings_data
+        record.workflows = body.workflows
+        record.store_procedural = True
+    else:
+        record = ProceduralMemory(
+            user_id=str(current_user.id),
+            settings=body.settings_data,
+            workflows=body.workflows,
+            store_procedural=True,
+        )
         if app_id:
-            try:
-                query = query.where(ProceduralMemory.app_id == uuid.UUID(app_id))
-            except ValueError:
-                raise HTTPException(status_code=400, detail="Invalid app_id format")
+            record.app_id = uuid.UUID(app_id)
+        db.add(record)
 
-        result = await db.execute(query)
-        record = result.scalar_one_or_none()
-
-        if record:
-            record.settings = settings_data
-            record.workflows = workflows
-            record.store_procedural = True
-        else:
-            record = ProceduralMemory(
-                user_id=str(current_user.id),
-                settings=settings_data,
-                workflows=workflows,
-                store_procedural=True,
-            )
-            # Set app_id if provided
-            if app_id:
-                try:
-                    record.app_id = uuid.UUID(app_id)
-                except ValueError:
-                    raise HTTPException(status_code=400, detail="Invalid app_id format")
-            db.add(record)
-
-        await db.commit()
-        await db.refresh(record)
-        return {
-            "id": str(record.id),
-            "user_id": str(current_user.id),
-            "upserted": True,
-            "updated_at": record.updated_at.isoformat(),
-        }
+    await db.commit()
+    await db.refresh(record)
+    return {
+        "id": str(record.id),
+        "user_id": str(current_user.id),
+        "upserted": True,
+        "updated_at": record.updated_at.isoformat(),
+    }
 
 
 @router.delete("/{user_id}/procedural/settings")
@@ -127,6 +129,7 @@ async def delete_procedural(
     user_id: str,
     app_id: Optional[str] = Query(default=None, description="Filter by app ID"),
     current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
     """Delete procedural memory for a user."""
     # Validate path user_id matches authenticated user
@@ -140,25 +143,21 @@ async def delete_procedural(
             return {"deleted": True, "user_id": user_id}
         raise HTTPException(status_code=404, detail="No procedural memory found")
 
-    from app.database import get_db
     from app.models.memory import ProceduralMemory
-    from sqlalchemy import select
 
-    async for db in get_db():
-        query = select(ProceduralMemory).where(
-            ProceduralMemory.user_id == str(current_user.id)
-        )
-        # Filter by app_id if provided
-        if app_id:
-            try:
-                query = query.where(ProceduralMemory.app_id == uuid.UUID(app_id))
-            except ValueError:
-                raise HTTPException(status_code=400, detail="Invalid app_id format")
+    query = select(ProceduralMemory).where(
+        ProceduralMemory.user_id == str(current_user.id)
+    )
+    if app_id:
+        try:
+            query = query.where(ProceduralMemory.app_id == uuid.UUID(app_id))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid app_id format")
 
-        result = await db.execute(query)
-        record = result.scalar_one_or_none()
-        if not record:
-            raise HTTPException(status_code=404, detail="No procedural memory found")
-        await db.delete(record)
-        await db.commit()
-        return {"deleted": True, "user_id": str(current_user.id)}
+    result = await db.execute(query)
+    record = result.scalar_one_or_none()
+    if not record:
+        raise HTTPException(status_code=404, detail="No procedural memory found")
+    await db.delete(record)
+    await db.commit()
+    return {"deleted": True, "user_id": str(current_user.id)}
