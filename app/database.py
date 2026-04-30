@@ -17,14 +17,16 @@ current_user_id: ContextVar[Optional[str]] = ContextVar(
     "current_user_id", default=None
 )
 
-# Create async engine
-engine = create_async_engine(
-    settings.database_url,
-    echo=settings.debug,
-    pool_size=10,
-    max_overflow=20,
-    pool_pre_ping=True,
-)
+    # Create async engine
+    engine = create_async_engine(
+        settings.database_url,
+        echo=settings.debug,
+        pool_size=10,
+        max_overflow=20,
+        pool_pre_ping=True,
+        # PgBouncer uses transaction pooling - keep pool small
+        # Actual concurrency is handled by PgBouncer, not SQLAlchemy
+    )
 
 
 def set_current_user_id(user_id: Optional[str]):

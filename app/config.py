@@ -9,7 +9,7 @@ class Settings(BaseSettings):
 
     # ── Database ───────────────────────────────────────────────────────────────
     database_url: str = (
-        "postgresql+asyncpg://postgres:postgres@localhost:5432/memory_layer"
+        "postgresql+asyncpg://postgres:postgres@pgbouncer:6432/memory_layer"
     )
 
     # ── Auth ───────────────────────────────────────────────────────────────────
@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     debug: bool = False
     environment: str = "development"    # "development" | "production"
 
+    # ── Observability ──────────────────────────────────────────────────────────
+    sentry_dsn: Optional[str] = None
+    
     # ── CORS ───────────────────────────────────────────────────────────────────
     allowed_origins: List[str] = ["*"]
 
