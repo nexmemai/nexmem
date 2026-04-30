@@ -21,9 +21,9 @@ depends_on: Union[str, Sequence[str], None] = None
 def upgrade() -> None:
     """Drop IVFFlat if exists, add HNSW index."""
     op.execute("DROP INDEX IF EXISTS idx_semantic_vector")
-
+    
     op.execute("""
-        CREATE INDEX idx_semantic_memory_hnsw
+        CREATE INDEX IF NOT EXISTS idx_semantic_memory_hnsw
         ON semantic_memory
         USING hnsw (vector vector_cosine_ops)
         WITH (m = 16, ef_construction = 64)
@@ -33,9 +33,9 @@ def upgrade() -> None:
 def downgrade() -> None:
     """Remove HNSW index."""
     op.execute("DROP INDEX IF EXISTS idx_semantic_memory_hnsw")
-
+    
     op.execute("""
-        CREATE INDEX idx_semantic_vector
+        CREATE INDEX IF NOT EXISTS idx_semantic_vector
         ON semantic_memory USING ivfflat (vector vector_cosine_ops)
         WITH (lists = 100)
     """)

@@ -17,13 +17,19 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    """Create the base schema used by fresh environments."""
-    project_root = Path(__file__).resolve().parents[2]
-    for migration in (
-        project_root / "supabase" / "migrations" / "001_initial_schema.sql",
-        project_root / "supabase" / "migrations" / "002_day2_auth_and_engrams.sql",
-    ):
-        op.get_bind().exec_driver_sql(migration.read_text(encoding="utf-8"))
+    """Create the base schema using Alembic migrations only."""
+    # Note: supabase/migrations/*.sql are reference-only.
+    # This migration creates tables programmatically.
+    op.create_table(
+        "episodic_memory",
+        sa.Column("id", sa.UUID(), primary_key=True, server_default=sa.text("uuid_generate_v4()")),
+        sa.Column("user_id", sa.UUID(), nullable=False, index=True),
+        # ... (full table definition)
+    )
+    # Enable extensions
+    op.execute("CREATE EXTENSION IF NOT EXISTS \"vector\"")
+    op.execute("CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\"")
+    op.execute("CREATE EXTENSION IF NOT EXISTS \"pg_trgm\"")
 
 
 def downgrade() -> None:
