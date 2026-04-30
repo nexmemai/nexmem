@@ -41,8 +41,14 @@ class Settings(BaseSettings):
     # ── Frontend ───────────────────────────────────────────────────────────────
     frontend_api_url: str = "http://localhost:8000"
 
-    # ── Demo mode (in-memory storage, no PostgreSQL required) ─────────────────
-    demo_mode: bool = True
+    # ── Redis (for rate limiting and quotas) ───────────────────
+    redis_url: Optional[str] = None
+
+    # ── User Tiers (quotas) ───────────────────────────────
+    free_monthly_writes: int = 1000
+    starter_monthly_writes: int = 10000
+    pro_monthly_writes: int = 100000
+    enterprise_monthly_writes: int = 1000000
 
     def validate_production(self) -> None:
         """Fail fast on unsafe production settings."""
