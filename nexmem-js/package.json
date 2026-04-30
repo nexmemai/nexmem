@@ -1,0 +1,33 @@
+{
+  "name": "nexmem-js",
+  "version": "0.1.0",
+  "description": "TypeScript SDK for the NexMem memory API",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepack": "npm run build"
+  },
+  "keywords": [
+    "memory",
+    "llm",
+    "ai",
+    "sdk"
+  ],
+  "author": "NexMem",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
