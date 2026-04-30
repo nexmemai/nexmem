@@ -6,7 +6,7 @@ Supports two modes:
 """
 
 from app.config import settings
-from app.routers import episodic, semantic, procedural, graph, rag, auth, health, memory, apps
+from app.routers import episodic, semantic, procedural, graph, rag, auth, health, memory, apps, gdpr
 from app.core.rate_limit import RateLimitMiddleware
 from app.core.logging import configure_logging
 
@@ -89,7 +89,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Decentralized AI Memory Layer",
+    title="NexMem - Decentralized AI Memory Layer",
     description="A persistent, cross-platform memory system for AI agents and LLMs",
     version="0.1.0",
     lifespan=lifespan,
@@ -192,13 +192,14 @@ app.include_router(auth.router, prefix="/api/v1")
 app.include_router(health.router)
 app.include_router(memory.router, prefix="/api/v1")
 app.include_router(apps.router, prefix="/api/v1")
+app.include_router(gdpr.router, prefix="/api/v1")
 
 
 @app.get("/")
 async def root():
     """Root endpoint."""
     return {
-        "service": "Decentralized AI Memory Layer",
+        "service": "NexMem - Decentralized AI Memory Layer",
         "version": "0.1.0",
         "mode": "demo" if settings.demo_mode else "production",
     }

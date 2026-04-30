@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: mnemo-api
+    name: nexmem-api
     env: python
     plan: free
     buildCommand: "pip install -r requirements.txt"
@@ -16,7 +16,7 @@ services:
       - key: ENVIRONMENT
         value: "production"
       - key: ALLOWED_ORIGINS
-        value: "https://mnemo-api.onrender.com"
+        value: "https://nexmem-api.onrender.com"
       - key: OPENAI_API_KEY
         sync: false
       - key: CONSOLIDATION_INTERVAL_MINUTES

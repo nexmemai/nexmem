@@ -7,7 +7,7 @@ services:
   # PostgreSQL with pgvector (local alternative to Supabase)
   postgres:
     image: pgvector/pgvector:pg16
-    container_name: memorylayer-postgres
+    container_name: nexmem-postgres
     environment:
       POSTGRES_DB: memory_layer
       POSTGRES_USER: postgres
@@ -28,7 +28,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: memorylayer-backend
+    container_name: nexmem-backend
     ports:
       - "8000:8000"
     environment:
@@ -55,7 +55,7 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    container_name: memorylayer-frontend
+    container_name: nexmem-frontend
     ports:
       - "8501:8501"
     environment:

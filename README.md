@@ -1,4 +1,4 @@
-# Decentralized AI Memory Layer
+# NexMem - Decentralized AI Memory Layer
 
 A persistent, cross-platform memory system for AI agents and LLMs, structured like human cognition into 4 memory types.
 
@@ -36,8 +36,8 @@ A persistent, cross-platform memory system for AI agents and LLMs, structured li
 
 | Type | Description | Storage | Decay |
 |------|-------------|---------|-------|
-| 🧠 **Episodic** | Time-stamped conversation history | PostgreSQL hypertable | 30 days (configurable) |
-| 🔍 **Semantic** | Vector embeddings for meaning search | pgvector (1536-dim) | Never |
+ | 🧠 **Episodic** | Time-stamped conversation history | PostgreSQL hypertable | 30 days (configurable) |
+| 🔍 **Semantic** | Vector embeddings for meaning search | pgvector (384-dim) | Never |
 | ⚙️ **Procedural** | User preferences, settings, workflows | JSONB | Never |
 | 🕸️ **Associative** | Knowledge graph relationships | Nodes + Edges | Never |
 
@@ -109,7 +109,7 @@ open http://localhost:8501
 ## Project Structure
 
 ```
-memorylayer/
+nexmem/
 ├── backend/
 │   ├── app/
 │   │   ├── main.py           # FastAPI application
@@ -153,7 +153,7 @@ memorylayer/
 |----------|---------|-------------|
 | `DATABASE_URL` | - | PostgreSQL connection string |
 | `OPENAI_API_KEY` | - | OpenAI API key |
-| `OPENAI_EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model |
+ | `OPENAI_EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | Embedding model |
 | `OPENAI_LLM_MODEL` | `gpt-4o` | LLM for RAG responses |
 | `MEMORY_DECAY_DAYS` | `30` | Days before episodic cleanup |
 | `SEMANTIC_TOP_K` | `5` | Default search results |

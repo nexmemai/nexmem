@@ -60,6 +60,7 @@ async def readiness(
             "status": "ready" if all_ok else "degraded",
             "checks": checks,
             "version": "0.1.0",
+        "service": "NexMem",
             "timestamp": datetime.utcnow().isoformat()
         }
     )
