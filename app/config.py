@@ -19,13 +19,11 @@ class Settings(BaseSettings):
 
     # ── OpenAI ─────────────────────────────────────────────────────────────────
     openai_api_key: str = "sk-placeholder"
-    openai_embedding_model: str = "text-embedding-3-small"
     openai_llm_model: str = "gpt-4o"
 
-    # ── Memory Settings ────────────────────────────────────────────────────────
-    memory_decay_days: int = 30
-    semantic_top_k: int = 5
-    vector_dim: int = 1536
+    # ── Embedding Settings ───────────────────────────────────────────────────────
+    embedding_model: str = "all-MiniLM-L6-v2"
+    vector_dim: int = 384
 
     # ── Consolidation Settings ─────────────────────────────────────
     consolidation_interval_minutes: int = 30

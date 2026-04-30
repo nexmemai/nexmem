@@ -197,7 +197,8 @@ async def create_edge(
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
 
-    from app.models.memory import KnowledgeEdge, KnowledgeNode
+    from app.models.memory import KnowledgeNode
+    from app.services.consolidation import persist_edge
 
     from_node = await db.get(KnowledgeNode, body.from_node_id)
     to_node = await db.get(KnowledgeNode, body.to_node_id)
@@ -208,17 +209,22 @@ async def create_edge(
     if body.from_node_id == body.to_node_id:
         raise HTTPException(status_code=400, detail="Self-loops are not allowed")
 
-    record = KnowledgeEdge(
-        user_id=str(current_user.id), from_node_id=body.from_node_id, to_node_id=body.to_node_id,
-        relation=body.relation, weight=body.weight, extra_metadata=body.metadata,
-    )
-    # Add app_id if provided
+    edge_app_id = None
     if app_id:
         try:
-            record.app_id = uuid.UUID(app_id)
+            edge_app_id = uuid.UUID(app_id)
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid app_id format")
-    db.add(record)
+    record = await persist_edge(
+        db,
+        source_id=body.from_node_id,
+        target_id=body.to_node_id,
+        relation=body.relation,
+        weight=body.weight,
+        user_id=str(current_user.id),
+        app_id=edge_app_id,
+        metadata=body.metadata,
+    )
     await db.commit()
     await db.refresh(record)
     return {

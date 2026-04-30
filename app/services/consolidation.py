@@ -12,14 +12,45 @@ from typing import List, Dict, Any, Optional
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.memory import EpisodicMemory, SemanticMemory, KnowledgeNode
+from app.models.memory import (
+    EpisodicMemory,
+    SemanticMemory,
+    KnowledgeEdge,
+    KnowledgeNode,
+)
 from app.config import settings
+from app.services.engram_processor import NLP_SEMAPHORE
 
 logger = logging.getLogger(__name__)
 
 # ==========================================
 # Core Consolidation Functions
 # ==========================================
+
+
+async def persist_edge(
+    db: AsyncSession,
+    source_id: str,
+    target_id: str,
+    relation: str,
+    weight: float,
+    user_id: str,
+    app_id: Optional[str] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> KnowledgeEdge:
+    """Persist a graph edge created in NetworkX to knowledge_edges."""
+    edge = KnowledgeEdge(
+        user_id=user_id,
+        app_id=app_id,
+        from_node_id=source_id,
+        to_node_id=target_id,
+        relation=relation,
+        weight=weight,
+        extra_metadata=metadata or {},
+    )
+    db.add(edge)
+    await db.flush()
+    return edge
 
 async def get_episodes_to_consolidate(
     db: AsyncSession,
@@ -90,11 +121,12 @@ async def extract_entities_and_actions(
     content: str,
     engram_processor,
 ) -> Dict[str, Any]:
-    """Async wrapper for NLP extraction."""
+    """Async wrapper for NLP extraction with semaphore."""
     loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(
-        None, extract_entities_and_actions_sync, content, engram_processor
-    )
+    async with NLP_SEMAPHORE:
+        return await loop.run_in_executor(
+            None, extract_entities_and_actions_sync, content, engram_processor
+        )
 
 
 async def create_semantic_from_episode(
@@ -106,13 +138,13 @@ async def create_semantic_from_episode(
     """Create semantic memory from consolidated episode."""
     try:
         # Generate embedding for the summary
-        vector = await asyncio.to_thread(embedder.embed, summary)
+        vector = await embedder.embed(summary)
         
         semantic = SemanticMemory(
             user_id=str(episode.user_id),
             episodic_id=episode.id,
             vector=vector,
-            embedding_model=settings.openai_embedding_model,
+            embedding_model="all-MiniLM-L6-v2",
             summary=summary,
             content_preview=episode.content[:500],
             index_semantic=True,

@@ -46,7 +46,7 @@ class SemanticCreate(BaseModel):
     content: str
     metadata: dict = {}
     summary: Optional[str] = None
-    embedding_model: str = "text-embedding-3-small"
+    embedding_model: str = "all-MiniLM-L6-v2"
     index_semantic: bool = True
 
 

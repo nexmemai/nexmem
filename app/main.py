@@ -8,17 +8,24 @@ Supports two modes:
 from app.config import settings
 from app.routers import episodic, semantic, procedural, graph, rag, auth, health, memory, apps
 from app.core.rate_limit import RateLimitMiddleware
+from app.core.logging import configure_logging
 
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, Depends, HTTPException
 from app.core.deps import get_current_user
+from app.core import security
+from app.database import reset_current_user_id, set_current_user_id
 from app.models.user import User
 from fastapi.middleware.cors import CORSMiddleware
+from jose import JWTError, jwt
 import time
 import logging
 import uuid
 
-logger = logging.getLogger("ai_memory")
+# Configure JSON logging once at startup
+configure_logging()
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -51,6 +58,27 @@ async def lifespan(app: FastAPI):
         from app.services.scheduler import start_scheduler
         start_scheduler()
 
+        await rebuild_networkx_graph()
+
+        # Verify vector dimension matches expected 384D
+        from sqlalchemy import text
+        async with engine.connect() as conn:
+            result = await conn.execute(
+                text("""
+                SELECT atttypmod
+                FROM pg_attribute
+                WHERE attrelid = 'semantic_memory'::regclass
+                  AND attname = 'vector'
+                """)
+            )
+            dim_raw = result.scalar()
+            dim = dim_raw - 4 if dim_raw is not None else None
+            if dim != 384:
+                raise RuntimeError(
+                    f"Vector dimension mismatch: expected 384, got {dim}. "
+                    "Run `alembic upgrade head`."
+                )
+
     yield
 
     if not settings.demo_mode:
@@ -80,18 +108,79 @@ app.add_middleware(
 )
 
 
+async def rebuild_networkx_graph() -> None:
+    """Rebuild the in-memory NetworkX graph from persisted knowledge_edges."""
+    from app.database import async_session
+    from app.models.memory import KnowledgeEdge, KnowledgeNode
+    from app.models.user import User
+    from app.services.engram_processor import engram_processor
+    from sqlalchemy import select, text
+    from sqlalchemy.orm import aliased
+
+    SourceNode = aliased(KnowledgeNode)
+    TargetNode = aliased(KnowledgeNode)
+
+    async with async_session() as session:
+        users = (await session.execute(select(User.id))).scalars().all()
+        loaded = 0
+        for user_id in users:
+            await session.execute(
+                text("SELECT set_config('app.current_user_id', :uid, true)"),
+                {"uid": str(user_id)},
+            )
+            result = await session.execute(
+                select(KnowledgeEdge, SourceNode, TargetNode)
+                .join(SourceNode, KnowledgeEdge.from_node_id == SourceNode.id)
+                .join(TargetNode, KnowledgeEdge.to_node_id == TargetNode.id)
+                .where(KnowledgeEdge.user_id == user_id)
+            )
+            for edge, source, target in result.all():
+                engram_processor.load_graph_edge(
+                    user_id=str(edge.user_id),
+                    source=source.label,
+                    target=target.label,
+                    relation=edge.relation,
+                    weight=edge.weight,
+                    source_type=source.type,
+                    target_type=target.type,
+                )
+                loaded += 1
+        logger.info("Rebuilt NetworkX graph from %s persisted edges", loaded)
+
+
+from app.middleware.logging import logging_middleware
+
+
+@app.middleware("http")
+async def user_context_middleware(request: Request, call_next):
+    """Set request-local user id so DB sessions can apply PostgreSQL RLS."""
+    user_id = None
+    auth_header = request.headers.get("Authorization")
+    if auth_header:
+        try:
+            scheme, credentials = auth_header.split()
+            if scheme.lower() == "bearer":
+                payload = jwt.decode(
+                    credentials,
+                    settings.secret_key,
+                    algorithms=[security.ALGORITHM],
+                )
+                user_id = payload.get("sub")
+        except (ValueError, JWTError):
+            user_id = None
+
+    request.state.current_user_id = user_id
+    token = set_current_user_id(user_id)
+    try:
+        return await call_next(request)
+    finally:
+        reset_current_user_id(token)
+
+
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
-    """Log all HTTP requests with method, path, status, and duration."""
-    request_id = str(uuid.uuid4())[:8]
-    start = time.time()
-    response = await call_next(request)
-    duration_ms = round((time.time() - start) * 1000)
-    logger.info(
-        f"[{request_id}] {request.method} {request.url.path} "
-        f"-> {response.status_code} ({duration_ms}ms)"
-    )
-    return response
+    """Log all HTTP requests with JSON formatting."""
+    return await logging_middleware(request, call_next)
 
 # Include routers
 app.include_router(episodic.router, prefix="/api/v1")

@@ -1,79 +1,54 @@
-"""OpenAI embedding service for generating vector embeddings."""
+"""
+Embedding service using sentence-transformers for local, async-safe embeddings.
+"""
 
+import asyncio
 import logging
 from typing import List, Optional
 
-import openai
 import numpy as np
-
-from app.config import settings
+from sentence_transformers import SentenceTransformer
 
 logger = logging.getLogger(__name__)
 
+# Semaphore to cap parallel NLP/embedding jobs (created per-event-loop)
+def get_nlp_semaphore():
+    """Get or create semaphore for current event loop."""
+    if not hasattr(asyncio.get_running_loop(), '_nlp_semaphore'):
+        asyncio.get_running_loop()._nlp_semaphore = asyncio.Semaphore(4)
+    return asyncio.get_running_loop()._nlp_semaphore
+
 
 class Embedder:
-    """Service for generating text embeddings using OpenAI API."""
+    """Service for generating text embeddings using sentence-transformers."""
 
     def __init__(self):
-        self.client = openai.OpenAI(api_key=settings.openai_api_key)
-        self.model = settings.openai_embedding_model
-        self.vector_dim = settings.vector_dim
+        self._embed_model = SentenceTransformer("all-MiniLM-L6-v2")
+        self.vector_dim = 384  # Fixed to 384D for all-MiniLM-L6-v2
 
-    def embed(self, text: str) -> List[float]:
+    async def embed(self, text: str) -> List[float]:
         """
-        Generate embedding for a single text.
-
-        Args:
-            text: The text to embed
-
-        Returns:
-            List of floats representing the embedding vector
+        Generate embedding for a single text (async-safe).
         """
-        try:
-            # Truncate text to avoid token limit issues
-            truncated = text[:8000]
-
-            response = self.client.embeddings.create(
-                model=self.model,
-                input=truncated
+        loop = asyncio.get_event_loop()
+        sem = get_nlp_semaphore()
+        async with sem:
+            return await loop.run_in_executor(
+                None,
+                lambda: self._embed_model.encode(text, normalize_embeddings=True).tolist()
             )
 
-            return response.data[0].embedding
-
-        except openai.APIError as e:
-            logger.error(f"OpenAI API error during embedding: {e}")
-            raise
-        except Exception as e:
-            logger.error(f"Unexpected error during embedding: {e}")
-            raise
-
-    def embed_batch(self, texts: List[str]) -> List[List[float]]:
+    async def embed_batch(self, texts: List[str]) -> List[List[float]]:
         """
-        Generate embeddings for multiple texts.
-
-        Args:
-            texts: List of texts to embed
-
-        Returns:
-            List of embedding vectors
+        Generate embeddings for multiple texts (async-safe).
         """
-        try:
-            # Truncate texts
-            truncated = [t[:8000] for t in texts]
-
-            response = self.client.embeddings.create(
-                model=self.model,
-                input=truncated
+        loop = asyncio.get_event_loop()
+        sem = get_nlp_semaphore()
+        async with sem:
+            return await loop.run_in_executor(
+                None,
+                lambda: self._embed_model.encode(texts, normalize_embeddings=True).tolist()
             )
-
-            return [item.embedding for item in response.data]
-
-        except openai.APIError as e:
-            logger.error(f"OpenAI API error during batch embedding: {e}")
-            raise
-        except Exception as e:
-            logger.error(f"Unexpected error during batch embedding: {e}")
-            raise
 
     def cosine_similarity(self, vec1: List[float], vec2: List[float]) -> float:
         """Calculate cosine similarity between two vectors."""
@@ -88,6 +63,36 @@ class Embedder:
         return vec.tolist()
 
 
+class LazyEmbedder:
+    """Create the sentence-transformers model only when embeddings are used."""
+
+    vector_dim = 384
+
+    def __init__(self):
+        self._instance: Optional[Embedder] = None
+        self._lock = asyncio.Lock()
+
+    async def _get(self) -> Embedder:
+        if self._instance is None:
+            async with self._lock:
+                if self._instance is None:
+                    self._instance = Embedder()
+        return self._instance
+
+    async def embed(self, text: str) -> List[float]:
+        instance = await self._get()
+        return await instance.embed(text)
+
+    async def embed_batch(self, texts: List[str]) -> List[List[float]]:
+        instance = await self._get()
+        return await instance.embed_batch(texts)
+
+    def random_vector(self) -> List[float]:
+        vec = np.random.randn(self.vector_dim)
+        vec = vec / np.linalg.norm(vec)
+        return vec.tolist()
+
+
 # Global embedder instance
-embedder = Embedder()
+embedder = LazyEmbedder()
 EmbeddingService = Embedder

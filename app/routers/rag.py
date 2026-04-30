@@ -150,7 +150,7 @@ async def rag_chat(
 
         try:
             import random
-            question_vector = [random.gauss(0, 1) for _ in range(1536)]
+            question_vector = [random.gauss(0, 1) for _ in range(384)]
             norm = sum(v * v for v in question_vector) ** 0.5
             question_vector = [v / norm for v in question_vector]
             create_semantic(

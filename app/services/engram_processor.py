@@ -21,18 +21,31 @@ import networkx as nx
 
 from app.config import settings
 
+# Cap parallel NLP jobs (shared with embedder)
+NLP_SEMAPHORE = asyncio.Semaphore(4)
+
+
+def _empty_user_context() -> Dict[str, Any]:
+    return {
+        "entities": [],
+        "actions": [],
+        "objects": [],
+        "graph": nx.Graph(),
+        "engrams": [],
+    }
+
 
 class EngramProcessor:
     """Processes text into compressed memory units (engrams)."""
 
-    def __init__(self):
+    def __init__(self, preloaded_contexts: Optional[Dict[str, Dict]] = None):
         import spacy
         from sentence_transformers import SentenceTransformer
 
         self._nlp = spacy.load("en_core_web_sm")
         self._embed_model = SentenceTransformer("all-MiniLM-L6-v2")
         self._graph = nx.Graph()
-        self._user_contexts: Dict[str, Dict] = {}
+        self._user_contexts: Dict[str, Dict] = preloaded_contexts or {}
 
     def _chunk_text(self, text: str, max_tokens: int = 200) -> List[str]:
         """Split long text into overlapping chunks."""
@@ -168,13 +181,7 @@ class EngramProcessor:
 
         user_key = str(user_id)
         if user_key not in self._user_contexts:
-            self._user_contexts[user_key] = {
-                "entities": [],
-                "actions": [],
-                "objects": [],
-                "graph": nx.Graph(),
-                "engrams": [],
-            }
+            self._user_contexts[user_key] = _empty_user_context()
 
         context = self._user_contexts[user_key]
         connections = []
@@ -209,6 +216,7 @@ class EngramProcessor:
             "negated_actions": all_negated_actions,
             "salience_scores": salience_scores,
             "connections": connections,
+            "graph_edges": [],
             "original_length": original_length,
             "compressed_length": compressed_length,
             "compression_ratio": round(compression_ratio, 3),
@@ -226,6 +234,14 @@ class EngramProcessor:
                     context["graph"].add_edge(
                         entity1, entity2, weight=2.5, relation="co_occur"
                     )
+                    engram["graph_edges"].append({
+                        "source": entity1,
+                        "source_type": "entity",
+                        "target": entity2,
+                        "target_type": "entity",
+                        "relation": "co_occur",
+                        "weight": 2.5,
+                    })
 
         for action in all_actions:
             for obj in all_objects:
@@ -233,6 +249,14 @@ class EngramProcessor:
                     context["graph"].add_edge(
                         action, obj, weight=1.5, relation="action_object"
                     )
+                    engram["graph_edges"].append({
+                        "source": action,
+                        "source_type": "action",
+                        "target": obj,
+                        "target_type": "object",
+                        "relation": "action_object",
+                        "weight": 1.5,
+                    })
 
         for action in all_actions:
             for entity in all_entities:
@@ -240,6 +264,14 @@ class EngramProcessor:
                     context["graph"].add_edge(
                         action, entity, weight=1.0, relation="action_entity"
                     )
+                    engram["graph_edges"].append({
+                        "source": action,
+                        "source_type": "action",
+                        "target": entity,
+                        "target_type": "entity",
+                        "relation": "action_entity",
+                        "weight": 1.0,
+                    })
 
         for i, action1 in enumerate(all_actions):
             for action2 in all_actions[i + 1:]:
@@ -247,15 +279,54 @@ class EngramProcessor:
                     context["graph"].add_edge(
                         action1, action2, weight=1.0, relation="co_action"
                     )
+                    engram["graph_edges"].append({
+                        "source": action1,
+                        "source_type": "action",
+                        "target": action2,
+                        "target_type": "action",
+                        "relation": "co_action",
+                        "weight": 1.0,
+                    })
 
         return engram
+
+    def load_graph_edge(
+        self,
+        user_id: str,
+        source: str,
+        target: str,
+        relation: str,
+        weight: float,
+        source_type: Optional[str] = None,
+        target_type: Optional[str] = None,
+    ) -> None:
+        """Load a persisted edge into the in-memory NetworkX graph."""
+        user_key = str(user_id)
+        if user_key not in self._user_contexts:
+            self._user_contexts[user_key] = _empty_user_context()
+
+        context = self._user_contexts[user_key]
+        context["graph"].add_edge(source, target, relation=relation, weight=weight)
+        if source_type == "entity" and source not in context["entities"]:
+            context["entities"].append(source)
+        if target_type == "entity" and target not in context["entities"]:
+            context["entities"].append(target)
+        if source_type == "action" and source not in context["actions"]:
+            context["actions"].append(source)
+        if target_type == "action" and target not in context["actions"]:
+            context["actions"].append(target)
+        if source_type == "object" and source not in context["objects"]:
+            context["objects"].append(source)
+        if target_type == "object" and target not in context["objects"]:
+            context["objects"].append(target)
 
     async def process_async(self, text: str, user_id: str) -> Dict[str, Any]:
         """Async wrapper - processes text without blocking the event loop."""
         loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(
-            None, partial(self._process_sync, text, user_id)
-        )
+        async with NLP_SEMAPHORE:
+            return await loop.run_in_executor(
+                None, partial(self._process_sync, text, user_id)
+            )
 
     def get_compressed_context(self, query: str, user_id: str) -> str:
         """Get compressed context for a user based on their engram history."""
@@ -323,23 +394,83 @@ class LazyEngramProcessor:
 
     def __init__(self):
         self._instance: Optional[EngramProcessor] = None
+        self._lock = asyncio.Lock()
+        self._preloaded_contexts: Dict[str, Dict] = {}
 
-    def _get(self) -> EngramProcessor:
+    async def _get(self) -> EngramProcessor:
         if self._instance is None:
-            self._instance = EngramProcessor()
+            async with self._lock:
+                if self._instance is None:
+                    self._instance = EngramProcessor(self._preloaded_contexts)
         return self._instance
 
     async def process_async(self, text: str, user_id: str) -> Dict[str, Any]:
-        return await self._get().process_async(text, user_id)
+        processor = await self._get()
+        return await processor.process_async(text, user_id)
 
     def get_compressed_context(self, query: str, user_id: str) -> str:
-        return self._get().get_compressed_context(query, user_id)
+        return self._get_instance().get_compressed_context(query, user_id)
 
     def get_graph_summary(self, user_id: str) -> Dict[str, Any]:
-        return self._get().get_graph_summary(user_id)
+        if self._instance is None:
+            user_key = str(user_id)
+            if user_key not in self._preloaded_contexts:
+                return {"nodes": 0, "edges": 0, "density": 0.0}
+
+            graph = self._preloaded_contexts[user_key]["graph"]
+            return {
+                "nodes": graph.number_of_nodes(),
+                "edges": graph.number_of_edges(),
+                "density": nx.density(graph) if graph.number_of_nodes() > 0 else 0.0,
+                "degree_centrality": dict(
+                    nx.degree_centrality(graph)
+                ) if graph.number_of_nodes() > 0 else {},
+            }
+        return self._get_instance().get_graph_summary(user_id)
+
+    def load_graph_edge(
+        self,
+        user_id: str,
+        source: str,
+        target: str,
+        relation: str,
+        weight: float,
+        source_type: Optional[str] = None,
+        target_type: Optional[str] = None,
+    ) -> None:
+        if self._instance is not None:
+            self._instance.load_graph_edge(
+                user_id, source, target, relation, weight, source_type, target_type
+            )
+            return
+
+        user_key = str(user_id)
+        if user_key not in self._preloaded_contexts:
+            self._preloaded_contexts[user_key] = _empty_user_context()
+
+        context = self._preloaded_contexts[user_key]
+        context["graph"].add_edge(source, target, relation=relation, weight=weight)
+        if source_type == "entity" and source not in context["entities"]:
+            context["entities"].append(source)
+        if target_type == "entity" and target not in context["entities"]:
+            context["entities"].append(target)
+        if source_type == "action" and source not in context["actions"]:
+            context["actions"].append(source)
+        if target_type == "action" and target not in context["actions"]:
+            context["actions"].append(target)
+        if source_type == "object" and source not in context["objects"]:
+            context["objects"].append(source)
+        if target_type == "object" and target not in context["objects"]:
+            context["objects"].append(target)
+
+    def _get_instance(self):
+        """Get instance synchronously (for non-async calls)."""
+        if self._instance is None:
+            self._instance = EngramProcessor(self._preloaded_contexts)
+        return self._instance
 
     def __getattr__(self, name: str):
-        return getattr(self._get(), name)
+        return getattr(self._get_instance(), name)
 
 
 engram_processor = LazyEngramProcessor()

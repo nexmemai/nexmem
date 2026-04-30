@@ -136,7 +136,7 @@ def create_semantic(
     user_id: str,
     vector: list[float],
     episodic_id: str = None,
-    embedding_model: str = "text-embedding-3-small",
+    embedding_model: str = "all-MiniLM-L6-v2",
     summary: str = None,
     content_preview: str = None,
     metadata: dict = None,
@@ -487,7 +487,7 @@ def initialize_demo_data(user_id: str = DEMO_USER_ID):
 
     for summary, ep_id in semantic_data:
         # Generate a random normalized vector
-        vector = [random.gauss(0, 1) for _ in range(1536)]
+        vector = [random.gauss(0, 1) for _ in range(384)]
         norm = sum(v * v for v in vector) ** 0.5
         vector = [v / norm for v in vector]
 

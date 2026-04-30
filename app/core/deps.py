@@ -7,6 +7,7 @@ import uuid
 from datetime import datetime
 
 from app.database import get_db
+from app.database import set_current_user_id, set_rls_context
 from app.models.user import User, APIKey
 from app.core import security
 from app.config import settings
@@ -61,6 +62,9 @@ async def get_current_user(
         user = result.scalar_one_or_none()
         if user is None:
             raise credentials_exception
+        request.state.current_user_id = str(user.id)
+        set_current_user_id(str(user.id))
+        await set_rls_context(db, str(user.id))
         return user
         
     elif scheme.lower() == "apikey":
@@ -76,7 +80,6 @@ async def get_current_user(
             raise credentials_exception
             
         # Update last used
-        from datetime import datetime
         api_key_obj.last_used_at = datetime.utcnow()
         await db.commit()
             
@@ -86,7 +89,10 @@ async def get_current_user(
         
         if user is None or not user.is_active:
             raise credentials_exception
-            
+
+        request.state.current_user_id = str(user.id)
+        set_current_user_id(str(user.id))
+        await set_rls_context(db, str(user.id))
         return user
         
     else:

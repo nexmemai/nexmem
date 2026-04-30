@@ -5,7 +5,7 @@ import asyncio
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import text
+from sqlalchemy import select, text
 import logging
 
 from app.database import get_db
@@ -13,9 +13,49 @@ from app.models.user import User
 from app.core.deps import get_current_user
 from app.services.embedder import EmbeddingService
 from app.services.engram_processor import engram_processor, decay_score
+from app.config import settings
+from app.models.memory import KnowledgeNode
+from app.services.consolidation import persist_edge
 
 router = APIRouter(prefix="/memory", tags=["memory"])
 logger = logging.getLogger(__name__)
+
+
+async def get_or_create_knowledge_node(
+    db: AsyncSession,
+    user_id: str,
+    label: str,
+    node_type: str,
+    engram_id: Optional[str],
+    app_id: Optional[str],
+) -> tuple[str, bool]:
+    """Return a knowledge node id for a label/type, creating it if needed."""
+    query = select(KnowledgeNode).where(
+        KnowledgeNode.user_id == user_id,
+        KnowledgeNode.label == label,
+        KnowledgeNode.type == node_type,
+    )
+    if app_id:
+        query = query.where(KnowledgeNode.app_id == app_id)
+    else:
+        query = query.where(KnowledgeNode.app_id.is_(None))
+
+    result = await db.execute(query.limit(1))
+    node = result.scalar_one_or_none()
+    if node:
+        return str(node.id), False
+
+    node = KnowledgeNode(
+        user_id=user_id,
+        label=label,
+        type=node_type,
+        properties={"source": "engram", "engram_id": engram_id},
+        store_associative=True,
+        app_id=app_id,
+    )
+    db.add(node)
+    await db.flush()
+    return str(node.id), True
 
 
 class ContextRequest(BaseModel):
@@ -258,7 +298,54 @@ async def write_episode(
     Returns summary of what was stored.
     """
     user_id = str(current_user.id)
+    
+    # Demo mode: use in-memory storage
+    if settings.demo_mode:
+        from app.demo_db import create_episodic, create_semantic, DEMO_USER_ID
 
+        # Create episodic record
+        episodic_result = create_episodic(
+            user_id=user_id,
+            session_id=body.session_id,
+            content=body.content,
+            metadata=body.metadata,
+            tags=body.tags,
+        )
+        episodic_id = episodic_result.get("id")
+
+        # Generate embedding using global embedder instance
+        from app.services.embedder import embedder
+        embedding = await embedder.embed(body.content)
+
+        # Create semantic record
+        semantic_result = create_semantic(
+            user_id=user_id,
+            episodic_id=episodic_id,
+            vector=embedding,
+            summary=body.content[:200],
+            content_preview=body.content[:500],
+            metadata=body.metadata,
+        )
+        semantic_id = semantic_result.get("id")
+
+        # Process with engram processor (optional, can be slow)
+        try:
+            engram = await engram_processor.process_async(body.content, user_id)
+            engram_id = engram.get("engram_id")
+        except Exception as e:
+            logger.warning(f"Engram processing failed: {e}")
+            engram_id = None
+
+        return EpisodeWriteResponse(
+            episodic_id=episodic_id,
+            semantic_id=semantic_id,
+            engram_id=engram_id,
+            nodes_created=0,
+            edges_created=0,
+            message="Episode stored successfully (demo mode)",
+        )
+
+    # Production mode: use database
     episodic_id = None
     semantic_id = None
     engram_id = None
@@ -346,23 +433,46 @@ async def write_episode(
     except Exception as exc:
         logger.warning("Engram persistence failed for episode %s: %s", episodic_id, exc)
 
-    for entity in engram.get("entities", []):
-        result = await db.execute(
-            text("""
-                INSERT INTO knowledge_nodes (user_id, label, type, properties, store_associative, app_id)
-                VALUES (:uid, :label, 'entity', :props, true, :app_id)
-                ON CONFLICT DO NOTHING
-                RETURNING id
-            """),
-            {
-                "uid": user_id,
-                "label": entity,
-                "props": {"source": "engram", "engram_id": engram_id},
-                "app_id": body.app_id,
-            }
+    node_ids: Dict[tuple[str, str], str] = {}
+    for graph_edge in engram.get("graph_edges", []):
+        for label_key, type_key in (
+            ("source", "source_type"),
+            ("target", "target_type"),
+        ):
+            label = graph_edge.get(label_key)
+            node_type = graph_edge.get(type_key)
+            if not label or not node_type:
+                continue
+
+            key = (label, node_type)
+            if key in node_ids:
+                continue
+
+            node_id, was_created = await get_or_create_knowledge_node(
+                db, user_id, label, node_type, engram_id, body.app_id
+            )
+            node_ids[key] = node_id
+            if was_created:
+                nodes_created += 1
+
+    for graph_edge in engram.get("graph_edges", []):
+        source_key = (graph_edge["source"], graph_edge["source_type"])
+        target_key = (graph_edge["target"], graph_edge["target_type"])
+        source_id = node_ids.get(source_key)
+        target_id = node_ids.get(target_key)
+        if not source_id or not target_id or source_id == target_id:
+            continue
+
+        await persist_edge(
+            db,
+            source_id=source_id,
+            target_id=target_id,
+            relation=graph_edge["relation"],
+            weight=graph_edge["weight"],
+            user_id=user_id,
+            app_id=body.app_id,
         )
-        if result.fetchone():
-            nodes_created += 1
+        edges_created += 1
 
     return EpisodeWriteResponse(
         episodic_id=episodic_id,
@@ -370,7 +480,10 @@ async def write_episode(
         engram_id=engram_id,
         nodes_created=nodes_created,
         edges_created=edges_created,
-        message=f"Stored in all memory sources. {nodes_created} entities extracted.",
+        message=(
+            f"Stored in all memory sources. {nodes_created} nodes and "
+            f"{edges_created} edges extracted."
+        ),
     )
 
 

@@ -89,9 +89,9 @@ class SemanticMemory(Base):
         ForeignKey("episodic_memory.id", ondelete="SET NULL"),
         nullable=True,
     )
-    vector = mapped_column(Vector(1536), nullable=False)
+    vector = mapped_column(Vector(384), nullable=False)
     embedding_model: Mapped[str] = mapped_column(
-        Text, nullable=False, default="text-embedding-3-small"
+        Text, nullable=False, default="all-MiniLM-L6-v2"
     )
     summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     content_preview: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
