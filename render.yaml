@@ -8,7 +8,7 @@ services:
     healthCheckPath: /health/live
     envVars:
       - key: DATABASE_URL
-        value: postgresql://postgres:***REDACTED_PASSWORD***@db.***REDACTED_PROJECT_ID***.supabase.co:5432/postgres
+        value: postgresql+asyncpg://postgres:***REDACTED_PASSWORD***@db.***REDACTED_PROJECT_ID***.supabase.co:5432/postgres
       - key: REDIS_URL
         fromService:
           type: redis
@@ -37,7 +37,7 @@ services:
     startCommand: "celery -A app.celery_app.celery_app worker --loglevel=info --concurrency=2"
     envVars:
       - key: DATABASE_URL
-        value: postgresql://postgres:***REDACTED_PASSWORD***@db.***REDACTED_PROJECT_ID***.supabase.co:5432/postgres
+        value: postgresql+asyncpg://postgres:***REDACTED_PASSWORD***@db.***REDACTED_PROJECT_ID***.supabase.co:5432/postgres
       - key: REDIS_URL
         fromService:
           type: redis

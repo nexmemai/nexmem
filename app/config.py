@@ -3,6 +3,8 @@
 from pydantic_settings import BaseSettings
 from typing import List, Optional
 
+from pydantic import field_validator
+
 
 class Settings(BaseSettings):
     """Application settings loaded from environment variables / .env file."""
@@ -11,6 +13,16 @@ class Settings(BaseSettings):
     database_url: str = (
         "postgresql+asyncpg://postgres:postgres@pgbouncer:6432/memory_layer"
     )
+
+    @field_validator("database_url", mode="before")
+    @classmethod
+    def assemble_db_connection(cls, v: Optional[str]) -> str:
+        if isinstance(v, str):
+            if v.startswith("postgres://"):
+                v = v.replace("postgres://", "postgresql+asyncpg://", 1)
+            elif v.startswith("postgresql://"):
+                v = v.replace("postgresql://", "postgresql+asyncpg://", 1)
+        return v
 
     # ── Auth ───────────────────────────────────────────────────────────────────
     # IMPORTANT: override SECRET_KEY in .env.local / .env.production
