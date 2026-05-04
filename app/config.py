@@ -9,6 +9,9 @@ from pydantic import field_validator
 class Settings(BaseSettings):
     """Application settings loaded from environment variables / .env file."""
 
+    # ── Mode ───────────────────────────────────────────────────────────────────
+    demo_mode: bool = True
+
     # ── Database ───────────────────────────────────────────────────────────────
     database_url: str = (
         "postgresql+asyncpg://postgres:postgres@pgbouncer:6432/memory_layer"
