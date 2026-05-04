@@ -69,3 +69,8 @@ async def verify_api_key(
     set_current_user_id(str(user.id))
     await set_rls_context(db, str(user.id))
     return user
+
+
+async def get_current_user(user: User = Depends(verify_api_key)) -> User:
+    """Dependency wrapper for verify_api_key."""
+    return user
