@@ -8,12 +8,12 @@ This document outlines the final steps and engineering tasks required to take th
 
 Currently, the system has basic `app_id` scoping. For production, we must strictly enforce authentication and authorization.
 
-- [ ] **Task 1.1: API Key Management**
+- [x] **Task 1.1: API Key Management**
   - Implement a secure API key generation and validation system using hashed keys stored in the database.
   - Create a FastAPI middleware/dependency (`Depends(verify_api_key)`) to protect all `/memory/*` endpoints.
-- [ ] **Task 1.2: Rate Limiting and Quotas**
+- [x] **Task 1.2: Rate Limiting and Quotas**
   - Integrate Redis-based rate limiting (e.g., `slowapi`) to restrict API calls based on subscription tiers (e.g., 1,000 free writes/month).
-- [ ] **Task 1.3: Secrets Management**
+- [x] **Task 1.3: Secrets Management**
   - Transition from local `.env` files to a secure secrets manager (AWS Secrets Manager, Doppler, or HashiCorp Vault) for production deployments.
   - Ensure `Pydantic BaseSettings` enforces strict validation of all required production variables.
 
@@ -21,11 +21,11 @@ Currently, the system has basic `app_id` scoping. For production, we must strict
 
 As an AI memory layer, the database will experience high write throughput and require sub-millisecond retrieval times.
 
-- [ ] **Task 2.1: PgBouncer / Connection Pooling**
+- [x] **Task 2.1: PgBouncer / Connection Pooling**
   - Implement connection pooling (PgBouncer) to prevent FastAPI workers from exhausting PostgreSQL connections during high concurrency.
-- [ ] **Task 2.2: pgvector Indexing Optimization**
+- [x] **Task 2.2: pgvector Indexing Optimization**
   - Add HNSW (Hierarchical Navigable Small World) indexes to the embedding columns in the `semantic` and `engrams` tables to ensure vector similarity search (`<=>`) remains fast as the dataset grows.
-- [ ] **Task 2.3: Database Migrations**
+- [x] **Task 2.3: Database Migrations**
   - Audit all Alembic scripts (`alembic/versions/*`) to ensure they run idempotently in production.
   - Verify that the `CREATE EXTENSION IF NOT EXISTS vector;` step executes securely on the production RDS/Cloud SQL instance.
 
