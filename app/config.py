@@ -14,7 +14,7 @@ class Settings(BaseSettings):
 
     # ── Database ───────────────────────────────────────────────────────────────
     database_url: str = (
-        "postgresql+asyncpg://postgres.qvlqhppghcrieajxrfv:***REDACTED_PASSWORD***@aws-1-ap-northeast-1.pooler.supabase.com:6543/postgres"
+        "postgresql+asyncpg://postgres.***REDACTED_PROJECT_ID***:***REDACTED_PASSWORD***@aws-0-ap-south-1.pooler.supabase.com:6543/postgres"
     )
 
     @field_validator("database_url", mode="before")
