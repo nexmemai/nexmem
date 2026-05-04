@@ -10,6 +10,50 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
+TOKEN_COST_PER_1K = {
+    "gpt-4o": {"prompt": 0.005, "completion": 0.015},
+    "gpt-4o-mini": {"prompt": 0.00015, "completion": 0.0006},
+    "gpt-4": {"prompt": 0.03, "completion": 0.06},
+}
+
+
+def track_token_usage(
+    user_id: str,
+    app_id: Optional[str],
+    prompt_tokens: int,
+    completion_tokens: int,
+    model: str,
+) -> None:
+    """Log token usage to database for billing."""
+    from app.database import async_session
+    from app.models.user import TokenUsage
+    import uuid
+
+    total = prompt_tokens + completion_tokens
+    cost = TOKEN_COST_PER_1K.get(model, {"prompt": 0, "completion": 0})
+    cost_cents = int(
+        (prompt_tokens / 1000 * cost["prompt"] + completion_tokens / 1000 * cost["completion"]) * 100
+    )
+
+    async def _insert():
+        async with async_session() as session:
+            usage = TokenUsage(
+                id=uuid.uuid4(),
+                user_id=uuid.UUID(user_id),
+                app_id=app_id,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total,
+                model=model,
+                cost_cents=cost_cents,
+            )
+            session.add(usage)
+            await session.commit()
+            logger.info(f"Tracked {total} tokens for user {user_id}: ${cost_cents/100:.4f}")
+
+    from asgiref.sync import async_to_sync
+    async_to_sync(_insert)()
+
 
 class LLMService:
     """Service for generating LLM responses with memory-augmented context."""
@@ -25,6 +69,8 @@ class LLMService:
         semantic_context: Optional[List[str]] = None,
         procedural_context: Optional[dict] = None,
         graph_context: Optional[List[str]] = None,
+        user_id: Optional[str] = None,
+        app_id: Optional[str] = None,
     ) -> dict:
         """
         Generate an LLM response augmented with memory context.
@@ -35,6 +81,8 @@ class LLMService:
             semantic_context: List of semantically relevant memories
             procedural_context: User's procedural memory (settings/workflows)
             graph_context: Relevant knowledge graph nodes/edges
+            user_id: User ID for tracking token usage
+            app_id: App ID for tracking token usage
 
         Returns:
             Dict with reply, usage stats, and latency
@@ -71,10 +119,22 @@ class LLMService:
             response = _call_llm()
             latency_ms = (time.time() - start_time) * 1000
 
+            prompt_tokens = response.usage.prompt_tokens
+            completion_tokens = response.usage.completion_tokens
+
+            if user_id and not settings.demo_mode:
+                track_token_usage(
+                    user_id=user_id,
+                    app_id=app_id,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    model=self.model,
+                )
+
             return {
                 "reply": response.choices[0].message.content,
-                "prompt_tokens": response.usage.prompt_tokens,
-                "completion_tokens": response.usage.completion_tokens,
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
                 "latency_ms": round(latency_ms, 2),
             }
 
