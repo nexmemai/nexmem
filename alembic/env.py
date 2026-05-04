@@ -27,6 +27,11 @@ db_url = os.environ.get("DATABASE_URL", settings.database_url).strip()
 # Standard Alembic migrations are synchronous and need psycopg2
 db_url = re.sub(r"postgresql\+asyncpg", "postgresql", db_url)
 
+# DEBUG: Force log the host being used
+from urllib.parse import urlparse
+parsed = urlparse(db_url)
+print(f"[DEBUG] Alembic is using host: {parsed.hostname} | port: {parsed.port}")
+
 # ✅ Set the URL for SQLAlchemy (escaping % for configparser)
 config.set_main_option("sqlalchemy.url", db_url.replace("%", "%%"))
 
