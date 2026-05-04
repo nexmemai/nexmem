@@ -1,3 +1,4 @@
+print("[EMERGENCY DEBUG] Alembic env.py starting...")
 import sys
 import os
 import re
@@ -6,6 +7,7 @@ from sqlalchemy import engine_from_config, pool
 from alembic import context
 from dotenv import load_dotenv
 
+print("[EMERGENCY DEBUG] Imports successful, setting path...")
 # ✅ Add project root to Python path so 'app' module is found on Render
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
