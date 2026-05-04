@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import os
 from typing import Any
 from uuid import uuid4
 
 import httpx
 from mcp.server.fastmcp import FastMCP
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 from tools.recall import recall_tool
 from tools.remember import remember_tool
@@ -18,6 +20,16 @@ DEFAULT_BASE_URL = "https://nexmem-api.onrender.com"
 
 mcp = FastMCP("nexmem")
 _client: "NexMemAPI | None" = None
+
+
+def get_api_key(args_api_key: str | None = None) -> str:
+    """Get API key: CLI arg > env var > error."""
+    if args_api_key:
+        return args_api_key
+    env_key = os.environ.get("NEXMEM_API_KEY")
+    if env_key:
+        return env_key
+    raise ValueError("API key required: pass --api-key or set NEXMEM_API_KEY env var")
 
 
 class NexMemAPI:
@@ -116,20 +128,24 @@ class NexMemAPI:
         await self._client.aclose()
 
     async def _request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
-        response = await self._client.request(method, path, **kwargs)
-        if response.status_code >= 400:
-            try:
-                detail = response.json().get("detail", response.text)
-            except ValueError:
-                detail = response.text
-            raise httpx.HTTPStatusError(
-                f"NexMem API error {response.status_code}: {detail}",
-                request=response.request,
-                response=response,
-            )
-        if not response.content:
-            return {}
-        return response.json()
+        @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
+        async def _do_request():
+            response = await self._client.request(method, path, **kwargs)
+            if response.status_code >= 400:
+                try:
+                    detail = response.json().get("detail", response.text)
+                except ValueError:
+                    detail = response.text
+                raise httpx.HTTPStatusError(
+                    f"NexMem API error {response.status_code}: {detail}",
+                    request=response.request,
+                    response=response,
+                )
+            if not response.content:
+                return {}
+            return response.json()
+        
+        return await _do_request()
 
 
 def get_client() -> NexMemAPI:
@@ -218,7 +234,8 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     global _client
     args = parse_args()
-    _client = NexMemAPI(api_key=args.api_key, base_url=args.base_url)
+    api_key = get_api_key(args.api_key)
+    _client = NexMemAPI(api_key=api_key, base_url=args.base_url)
     mcp.run(transport="stdio")
 
 
