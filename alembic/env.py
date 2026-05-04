@@ -81,6 +81,11 @@ async def run_migrations_online() -> None:
     Run migrations with a live async connection.
     NullPool is used so Alembic doesn't hang on to connections.
     """
+    # DEBUG: Print the host we are trying to connect to
+    from urllib.parse import urlparse
+    parsed = urlparse(settings.database_url)
+    print(f"DEBUG: Attempting to connect to host: {parsed.hostname} on port: {parsed.port}")
+    
     connectable = create_async_engine(
         settings.database_url,
         poolclass=pool.NullPool,
