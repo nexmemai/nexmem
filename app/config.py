@@ -14,7 +14,7 @@ class Settings(BaseSettings):
 
     # ── Database ───────────────────────────────────────────────────────────────
     database_url: str = (
-        "postgresql+asyncpg://postgres.***REDACTED_PROJECT_ID***:***REDACTED_PASSWORD***@aws-1-ap-northeast-1.pooler.supabase.com:6543/postgres"
+        "postgresql+asyncpg://postgres.***REDACTED_PROJECT_ID***:***REDACTED_PASSWORD***@aws-1-ap-northeast-1.pooler.supabase.com:6543/postgres?ssl=require"
     )
 
     @field_validator("database_url", mode="before")
@@ -26,7 +26,7 @@ class Settings(BaseSettings):
             # FAIL-SAFE: If Render is providing the old broken IPv6-only host, force the Tokyo pooler.
             if "db.***REDACTED_PROJECT_ID***" in v or "pgbouncer" in v:
                 print(f"[config] Detected stale/invalid host in DATABASE_URL. Overriding with Tokyo pooler.")
-                v = "postgresql+asyncpg://postgres.***REDACTED_PROJECT_ID***:***REDACTED_PASSWORD***@aws-1-ap-northeast-1.pooler.supabase.com:6543/postgres"
+                v = "postgresql+asyncpg://postgres.***REDACTED_PROJECT_ID***:***REDACTED_PASSWORD***@aws-1-ap-northeast-1.pooler.supabase.com:6543/postgres?ssl=require"
             
             if v.startswith("postgres://"):
                 v = v.replace("postgres://", "postgresql+asyncpg://", 1)
