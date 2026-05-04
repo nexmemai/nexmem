@@ -1,46 +1,46 @@
+import sys
 import os
 import re
-import asyncio
-import sys
 from logging.config import fileConfig
 from sqlalchemy import engine_from_config, pool
 from alembic import context
+from dotenv import load_dotenv
 
 # ✅ Add project root to Python path so 'app' module is found on Render
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.config import settings
+# Load environment variables
+load_dotenv()
 
-# this is the Alembic Config object, which provides
-# access to the values within the .ini file in use.
+# this is the Alembic Config object
 config = context.config
 
-# Interpret the config file for Python logging.
-# This line sets up loggers basically.
+# Interpret the config file for Python logging
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# ✅ Read DATABASE_URL from environment (fallback to settings if not in env)
-db_url = os.environ.get("DATABASE_URL", settings.database_url).strip()
-
-# ✅ Force sync driver for Alembic (strip asyncpg if present)
-# Standard Alembic migrations are synchronous and need psycopg2
-db_url = re.sub(r"postgresql\+asyncpg", "postgresql", db_url)
-
-# DEBUG: Force log the host being used
-from urllib.parse import urlparse
-parsed = urlparse(db_url)
-print(f"[DEBUG] Alembic is using host: {parsed.hostname} | port: {parsed.port}")
-
-# ✅ Set the URL for SQLAlchemy (escaping % for configparser)
-config.set_main_option("sqlalchemy.url", db_url.replace("%", "%%"))
-
-print(f"[Alembic] Connecting to: {db_url[:60]}...")  # safe partial log
-
-# add your model's MetaData object here
-# for 'autogenerate' support
+# target_metadata = None
 from app.models import Base
 target_metadata = Base.metadata
+
+# Get DATABASE_URL from environment
+database_url = os.getenv('DATABASE_URL', '').strip()
+
+if not database_url:
+    # Fallback to hardcoded settings if env is missing
+    from app.config import settings
+    database_url = settings.database_url
+
+# ✅ Handle asyncpg prefix - convert to psycopg2 for Alembic sync mode
+if "+asyncpg" in database_url:
+    database_url = database_url.replace("+asyncpg", "+psycopg2")
+elif database_url.startswith('postgresql://'):
+    database_url = database_url.replace('postgresql://', 'postgresql+psycopg2://', 1)
+
+# ✅ Update the sqlalchemy.url in config (escape % for interpolation)
+config.set_main_option('sqlalchemy.url', database_url.replace("%", "%%"))
+
+print(f"[Alembic] Connecting to: {database_url[:60]}...")
 
 def run_migrations_offline() -> None:
     """Run migrations in 'offline' mode."""
@@ -55,22 +55,25 @@ def run_migrations_offline() -> None:
     with context.begin_transaction():
         context.run_migrations()
 
-def do_run_migrations(connection):
-    context.configure(connection=connection, target_metadata=target_metadata)
-
-    with context.begin_transaction():
-        context.run_migrations()
-
 def run_migrations_online() -> None:
     """Run migrations in 'online' mode."""
+    configuration = config.get_section(config.config_ini_section)
+    configuration["sqlalchemy.url"] = config.get_main_option("sqlalchemy.url")
+    
     connectable = engine_from_config(
-        config.get_section(config.config_ini_section, {}),
+        configuration,
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        echo=True,
     )
 
     with connectable.connect() as connection:
-        do_run_migrations(connection)
+        context.configure(
+            connection=connection, target_metadata=target_metadata
+        )
+
+        with context.begin_transaction():
+            context.run_migrations()
 
 if context.is_offline_mode():
     run_migrations_offline()
