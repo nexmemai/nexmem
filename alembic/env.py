@@ -28,10 +28,11 @@ target_metadata = Base.metadata
 # Get DATABASE_URL from environment
 database_url = os.getenv('DATABASE_URL', '').strip()
 
-if not database_url:
-    # Fallback to hardcoded settings if env is missing
-    from app.config import settings
-    database_url = settings.database_url
+# 🛑 FAIL-SAFE OVERRIDE: 
+# If Render dashboard has a stale/broken IPv6 hostname, force the Mumbai pooler.
+if "db.***REDACTED_PROJECT_ID***" in database_url or not database_url:
+    print("[Alembic] Stale/Missing DATABASE_URL detected. Forcing Mumbai pooler override.")
+    database_url = "postgresql://postgres.***REDACTED_PROJECT_ID***:***REDACTED_PASSWORD***@aws-0-ap-south-1.pooler.supabase.com:6543/postgres"
 
 # ✅ Handle asyncpg prefix - convert to psycopg2 for Alembic sync mode
 if "+asyncpg" in database_url:
