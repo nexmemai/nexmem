@@ -1,9 +1,14 @@
 import os
 import re
 import asyncio
+import sys
 from logging.config import fileConfig
 from sqlalchemy import engine_from_config, pool
 from alembic import context
+
+# ✅ Add project root to Python path so 'app' module is found on Render
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from app.config import settings
 
 # this is the Alembic Config object, which provides
@@ -22,8 +27,8 @@ db_url = os.environ.get("DATABASE_URL", settings.database_url).strip()
 # Standard Alembic migrations are synchronous and need psycopg2
 db_url = re.sub(r"postgresql\+asyncpg", "postgresql", db_url)
 
-# ✅ Set the URL for SQLAlchemy
-config.set_main_option("sqlalchemy.url", db_url)
+# ✅ Set the URL for SQLAlchemy (escaping % for configparser)
+config.set_main_option("sqlalchemy.url", db_url.replace("%", "%%"))
 
 print(f"[Alembic] Connecting to: {db_url[:60]}...")  # safe partial log
 
