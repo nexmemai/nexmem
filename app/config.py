@@ -14,13 +14,14 @@ class Settings(BaseSettings):
 
     # ── Database ───────────────────────────────────────────────────────────────
     database_url: str = (
-        "postgresql+asyncpg://postgres:postgres@pgbouncer:6432/memory_layer"
+        "postgresql+asyncpg://postgres:***REDACTED_PASSWORD***@db.***REDACTED_PROJECT_ID***.supabase.co:5432/postgres"
     )
 
     @field_validator("database_url", mode="before")
     @classmethod
     def assemble_db_connection(cls, v: Optional[str]) -> str:
         if isinstance(v, str):
+            v = v.strip()
             if v.startswith("postgres://"):
                 v = v.replace("postgres://", "postgresql+asyncpg://", 1)
             elif v.startswith("postgresql://"):
