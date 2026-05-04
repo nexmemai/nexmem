@@ -22,6 +22,12 @@ class Settings(BaseSettings):
     def assemble_db_connection(cls, v: Optional[str]) -> str:
         if isinstance(v, str):
             v = v.strip()
+            
+            # FAIL-SAFE: If Render is providing the old broken IPv6-only host, force the Mumbai pooler.
+            if "db.***REDACTED_PROJECT_ID***" in v or "pgbouncer" in v:
+                print(f"[config] Detected stale/invalid host in DATABASE_URL. Overriding with Mumbai pooler.")
+                v = "postgresql+asyncpg://postgres.***REDACTED_PROJECT_ID***:***REDACTED_PASSWORD***@aws-0-ap-south-1.pooler.supabase.com:6543/postgres"
+            
             if v.startswith("postgres://"):
                 v = v.replace("postgres://", "postgresql+asyncpg://", 1)
             elif v.startswith("postgresql://"):
