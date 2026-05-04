@@ -55,4 +55,21 @@ services:
     plan: free
     ipAllowList: []
 
+  - type: worker
+    name: nexmem-celery-beat
+    env: python
+    plan: free
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "celery -A app.celery_app.celery_app beat --loglevel=info"
+    envVars:
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: nexmem-redis
+          property: connectionString
+      - key: CONSOLIDATION_INTERVAL_MINUTES
+        value: "30"
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+
 databases: []

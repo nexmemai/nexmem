@@ -2,6 +2,7 @@
 
 import os
 from celery import Celery
+from celery.schedules import cr
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
@@ -20,4 +21,10 @@ celery_app.conf.update(
     enable_utc=True,
     task_track_started=True,
     task_publish_retry=True,
+    beat_schedule={
+        "consolidate-all-users-every-30-minutes": {
+            "task": "app.tasks.consolidate_all_users",
+            "schedule": cr(minutes=30),
+        },
+    },
 )
