@@ -84,7 +84,7 @@ async def lifespan(app: FastAPI):
                 """)
             )
             dim_raw = result.scalar()
-            dim = dim_raw - 4 if dim_raw is not None else None
+            dim = dim_raw if dim_raw is not None else None
             if dim != 384:
                 raise RuntimeError(
                     f"Vector dimension mismatch: expected 384, got {dim}. "
