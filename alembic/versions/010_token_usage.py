@@ -12,7 +12,7 @@ import sqlalchemy as sa
 
 
 revision: str = '010_token_usage'
-down_revision: Union[str, None] = '51d59ebea874'
+down_revision: Union[str, None] = '009_engram_hnsw_index'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
