@@ -11,7 +11,7 @@ import logging
 from app.database import get_db
 from app.models.user import User
 from app.core.deps import get_current_user
-from app.services.embedder import EmbeddingService
+from app.services.embedder import embedder
 from app.services.engram_processor import engram_processor, decay_score
 from app.config import settings
 from app.models.memory import KnowledgeNode
@@ -169,10 +169,9 @@ async def get_memory_context(
     engram = await engram_processor.process_async(body.query, user_id)
     engram_context = engram_processor.get_compressed_context(body.query, user_id)
 
-    embedding_service = EmbeddingService()
     query_embedding = None
     try:
-        query_embedding = await asyncio.to_thread(embedding_service.embed, body.query)
+        query_embedding = await embedder.embed(body.query)
     except Exception as exc:
         logger.warning("Embedding failed for context query: %s", exc)
 
@@ -373,9 +372,8 @@ async def write_episode(
     row = result.fetchone()
     episodic_id = str(row[0]) if row else None
 
-    embedding_service = EmbeddingService()
     try:
-        embedding = await asyncio.to_thread(embedding_service.embed, body.content)
+        embedding = await embedder.embed(body.content)
         embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
         result = await db.execute(
             text("""

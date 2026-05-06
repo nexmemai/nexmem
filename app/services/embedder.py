@@ -102,4 +102,3 @@ class LazyEmbedder:
 
 # Global embedder instance
 embedder = LazyEmbedder()
-EmbeddingService = Embedder
