@@ -19,7 +19,7 @@ from app.models.memory import (
     KnowledgeNode,
 )
 from app.config import settings
-from app.services.engram_processor import NLP_SEMAPHORE
+from app.services.embedder import get_nlp_semaphore
 
 logger = logging.getLogger(__name__)
 
@@ -134,7 +134,8 @@ async def extract_entities_and_actions(
 ) -> Dict[str, Any]:
     """Async wrapper for NLP extraction with semaphore."""
     loop = asyncio.get_event_loop()
-    async with NLP_SEMAPHORE:
+    sem = get_nlp_semaphore()
+    async with sem:
         return await loop.run_in_executor(
             None, extract_entities_and_actions_sync, content, engram_processor
         )

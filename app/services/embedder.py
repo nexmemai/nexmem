@@ -6,8 +6,6 @@ import asyncio
 import logging
 from typing import List, Optional
 
-import numpy as np
-from sentence_transformers import SentenceTransformer
 
 logger = logging.getLogger(__name__)
 
@@ -15,7 +13,7 @@ logger = logging.getLogger(__name__)
 def get_nlp_semaphore():
     """Get or create semaphore for current event loop."""
     if not hasattr(asyncio.get_running_loop(), '_nlp_semaphore'):
-        asyncio.get_running_loop()._nlp_semaphore = asyncio.Semaphore(4)
+        asyncio.get_running_loop()._nlp_semaphore = asyncio.Semaphore(1)
     return asyncio.get_running_loop()._nlp_semaphore
 
 
@@ -23,20 +21,26 @@ class Embedder:
     """Service for generating text embeddings using sentence-transformers."""
 
     def __init__(self):
+        import torch
+        from sentence_transformers import SentenceTransformer
+        # Prevent PyTorch from spawning too many threads inside the executor (deadlocks)
+        torch.set_num_threads(1)
         self._embed_model = SentenceTransformer("all-MiniLM-L6-v2")
         self.vector_dim = 384  # Fixed to 384D for all-MiniLM-L6-v2
 
     async def embed(self, text: str) -> List[float]:
-        """
-        Generate embedding for a single text (async-safe).
-        """
+        print('Embedder.embed called', flush=True)
         loop = asyncio.get_running_loop()
         sem = get_nlp_semaphore()
+        print('Waiting for sem in Embedder.embed', flush=True)
         async with sem:
-            return await loop.run_in_executor(
+            print('Got sem in Embedder.embed', flush=True)
+            res = await loop.run_in_executor(
                 None,
                 lambda: self._embed_model.encode(text, normalize_embeddings=True).tolist()
             )
+            print('Executor done in Embedder.embed', flush=True)
+            return res
 
     async def embed_batch(self, texts: List[str]) -> List[List[float]]:
         """
@@ -52,12 +56,14 @@ class Embedder:
 
     def cosine_similarity(self, vec1: List[float], vec2: List[float]) -> float:
         """Calculate cosine similarity between two vectors."""
+        import numpy as np
         v1 = np.array(vec1)
         v2 = np.array(vec2)
         return float(np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2)))
 
     def random_vector(self) -> List[float]:
         """Generate a random normalized vector for demo/fallback purposes."""
+        import numpy as np
         vec = np.random.randn(self.vector_dim)
         vec = vec / np.linalg.norm(vec)
         return vec.tolist()
@@ -95,6 +101,7 @@ class LazyEmbedder:
         return await instance.embed_batch(texts)
 
     def random_vector(self) -> List[float]:
+        import numpy as np
         vec = np.random.randn(self.vector_dim)
         vec = vec / np.linalg.norm(vec)
         return vec.tolist()

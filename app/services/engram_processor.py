@@ -21,8 +21,7 @@ import networkx as nx
 
 from app.config import settings
 
-# Cap parallel NLP jobs (shared with embedder)
-NLP_SEMAPHORE = asyncio.Semaphore(4)
+from app.services.embedder import get_nlp_semaphore
 
 
 def _empty_user_context() -> Dict[str, Any]:
@@ -323,7 +322,8 @@ class EngramProcessor:
     async def process_async(self, text: str, user_id: str) -> Dict[str, Any]:
         """Async wrapper - processes text without blocking the event loop."""
         loop = asyncio.get_event_loop()
-        async with NLP_SEMAPHORE:
+        sem = get_nlp_semaphore()
+        async with sem:
             return await loop.run_in_executor(
                 None, partial(self._process_sync, text, user_id)
             )
@@ -394,12 +394,18 @@ class LazyEngramProcessor:
 
     def __init__(self):
         self._instance: Optional[EngramProcessor] = None
-        self._lock = asyncio.Lock()
+        self._lock: Optional[asyncio.Lock] = None
         self._preloaded_contexts: Dict[str, Dict] = {}
+
+    def _get_lock(self) -> asyncio.Lock:
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+        return self._lock
 
     async def _get(self) -> EngramProcessor:
         if self._instance is None:
-            async with self._lock:
+            lock = self._get_lock()
+            async with lock:
                 if self._instance is None:
                     self._instance = EngramProcessor(self._preloaded_contexts)
         return self._instance
