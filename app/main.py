@@ -221,9 +221,9 @@ app.include_router(apps.router, prefix="/api/v1")
 app.include_router(gdpr.router, prefix="/api/v1")
 
 
-@app.get("/")
+@app.api_route("/", methods=["GET", "HEAD"])
 async def root():
-    """Root endpoint."""
+    """Root endpoint — supports HEAD for health checks."""
     return {
         "service": "NexMem - Decentralized AI Memory Layer",
         "version": "0.1.0",
@@ -231,15 +231,8 @@ async def root():
     }
 
 
-@app.get("/health")
-async def health_check():
-    """Health check endpoint."""
-    return {
-        "status": "ok",
-        "service": "ai-memory-layer",
-        "version": "0.1.0",
-        "mode": "demo" if settings.demo_mode else "production",
-    }
+# NOTE: /health/live and /health/ready are handled by health.router
+# Do NOT add a duplicate @app.get("/health") here.
 
 
 @app.post("/api/v1/memory/cleanup")

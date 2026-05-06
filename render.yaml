@@ -3,12 +3,12 @@ services:
     name: nexmem-api
     env: python
     plan: free
-    buildCommand: "pip install -r requirements.txt"
+    buildCommand: "pip install --upgrade pip && pip install -r requirements.txt"
     startCommand: "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT"
     healthCheckPath: /health/live
     envVars:
       - key: DATABASE_URL
-        value: postgresql+asyncpg://postgres.***REDACTED_PROJECT_ID***:***REDACTED_PASSWORD***@aws-0-ap-south-1.pooler.supabase.com:6543/postgres
+        value: postgresql+asyncpg://postgres.***REDACTED_PROJECT_ID***@aws-1-ap-northeast-1.pooler.supabase.com:6543/postgres?sslmode=require
       - key: REDIS_URL
         fromService:
           type: redis
@@ -21,8 +21,10 @@ services:
       - key: ENVIRONMENT
         value: "production"
       - key: ALLOWED_ORIGINS
-        value: "https://nexmem-api.onrender.com"
+        value: "https://nexmem.onrender.com,https://nexmem.ai"
       - key: OPENAI_API_KEY
+        sync: false
+      - key: SENTRY_DSN
         sync: false
       - key: CONSOLIDATION_INTERVAL_MINUTES
         value: "30"
@@ -33,11 +35,11 @@ services:
     name: nexmem-celery-worker
     env: python
     plan: free
-    buildCommand: "pip install -r requirements.txt"
+    buildCommand: "pip install --upgrade pip && pip install -r requirements.txt"
     startCommand: "celery -A app.celery_app.celery_app worker --loglevel=info --concurrency=2"
     envVars:
       - key: DATABASE_URL
-        value: postgresql+asyncpg://postgres.***REDACTED_PROJECT_ID***:***REDACTED_PASSWORD***@aws-0-ap-south-1.pooler.supabase.com:6543/postgres
+        value: postgresql+asyncpg://postgres.***REDACTED_PROJECT_ID***@aws-1-ap-northeast-1.pooler.supabase.com:6543/postgres?sslmode=require
       - key: REDIS_URL
         fromService:
           type: redis
@@ -59,7 +61,7 @@ services:
     name: nexmem-celery-beat
     env: python
     plan: free
-    buildCommand: "pip install -r requirements.txt"
+    buildCommand: "pip install --upgrade pip && pip install -r requirements.txt"
     startCommand: "celery -A app.celery_app.celery_app beat --loglevel=info"
     envVars:
       - key: REDIS_URL

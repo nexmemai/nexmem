@@ -13,31 +13,36 @@ class Settings(BaseSettings):
     demo_mode: bool = True
 
     # ── Database ───────────────────────────────────────────────────────────────
-    database_url: str = (
-        "postgresql+asyncpg://postgres.***REDACTED_PROJECT_ID***:***REDACTED_PASSWORD***@aws-1-ap-northeast-1.pooler.supabase.com:6543/postgres?sslmode=require"
-    )
+    # Must be set via DATABASE_URL environment variable — no hardcoded default.
+    database_url: str = ""
 
     @field_validator("database_url", mode="before")
     @classmethod
     def assemble_db_connection(cls, v: Optional[str]) -> str:
-        if isinstance(v, str):
-            v = v.strip()
-            
-            # FAIL-SAFE: If Render is providing the old broken IPv6-only host, force the Tokyo pooler.
-            if "db.***REDACTED_PROJECT_ID***" in v or "pgbouncer" in v:
-                print(f"[config] Detected stale/invalid host in DATABASE_URL. Overriding with Tokyo pooler.")
-                v = "postgresql+asyncpg://postgres.***REDACTED_PROJECT_ID***:***REDACTED_PASSWORD***@aws-1-ap-northeast-1.pooler.supabase.com:6543/postgres?sslmode=require"
-            
-            if v.startswith("postgres://"):
-                v = v.replace("postgres://", "postgresql+asyncpg://", 1)
-            elif v.startswith("postgresql://"):
-                v = v.replace("postgresql://", "postgresql+asyncpg://", 1)
+        if not isinstance(v, str) or not v.strip():
+            raise ValueError(
+                "DATABASE_URL is not set. Add it to Render env vars or your .env file."
+            )
+        v = v.strip()
+        # Normalise scheme to asyncpg
+        if v.startswith("postgres://"):
+            v = v.replace("postgres://", "postgresql+asyncpg://", 1)
+        elif v.startswith("postgresql://") and "+asyncpg" not in v:
+            v = v.replace("postgresql://", "postgresql+asyncpg://", 1)
+        # Strip ?ssl= param that asyncpg does not understand
+        import re
+        v = re.sub(r"[&?]ssl=[^&]*", "", v)
+        # Ensure sslmode=require is present for Supabase
+        if "sslmode" not in v:
+            sep = "&" if "?" in v else "?"
+            v = f"{v}{sep}sslmode=require"
         return v
 
     # ── Auth ───────────────────────────────────────────────────────────────────
-    # IMPORTANT: override SECRET_KEY in .env.local / .env.production
+    # IMPORTANT: Set a strong random value in Render env vars.
+    # Generate one with: python -c "import secrets; print(secrets.token_hex(32))"
     secret_key: str = "local-dev-secret-change-this-before-production"
-    access_token_expire_hours: int = 24
+    access_token_expire_hours: int = 4
 
     # ── OpenAI ─────────────────────────────────────────────────────────────────
     openai_api_key: str = "sk-placeholder"
@@ -76,23 +81,36 @@ class Settings(BaseSettings):
     enterprise_monthly_writes: int = 1000000
 
     def validate_production(self) -> None:
-        """Strict validation for production mode."""
+        """Strict validation for production mode — raises on insecure config."""
         if self.demo_mode:
             return
 
         errors = []
-        if self.secret_key == "changeme_in_production" or len(self.secret_key) < 16:
-            # We will log a warning instead of crashing if it's the first boot
-            print("[WARNING] SECRET_KEY is not secure. Please update in Render Dashboard.")
-        
-        if not self.openai_api_key:
-            print("[WARNING] OPENAI_API_KEY is missing. AI features will be disabled.")
-            
+
+        if (
+            self.secret_key.startswith("local-dev")
+            or self.secret_key == "changeme_in_production"
+            or len(self.secret_key) < 32
+        ):
+            errors.append(
+                "SECRET_KEY is too weak or is the default value. "
+                "Generate one with: python -c \"import secrets; print(secrets.token_hex(32))\""
+            )
+
+        if not self.openai_api_key or self.openai_api_key == "sk-placeholder":
+            import logging
+            logging.getLogger(__name__).warning(
+                "OPENAI_API_KEY is missing or placeholder — AI summarisation features disabled."
+            )
+
         if self.allowed_origins == ["*"]:
-            print("[WARNING] ALLOWED_ORIGINS is set to '*'. This is insecure for production.")
-            
+            errors.append(
+                "ALLOWED_ORIGINS is '*' which allows any origin. "
+                "Set it to your frontend domain(s) in Render env vars."
+            )
+
         if errors:
-            raise RuntimeError("Invalid production configuration: " + "; ".join(errors))
+            raise RuntimeError("Invalid production configuration:\n  - " + "\n  - ".join(errors))
 
     class Config:
         # Reads .env first, then .env.local for local overrides

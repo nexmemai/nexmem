@@ -20,7 +20,7 @@ class User(Base):
     hashed_password = Column(String, nullable=True)
     is_active = Column(Boolean, default=True, nullable=False)
     tier = Column(String, default="free", nullable=False)  # free, starter, pro, enterprise
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow(), nullable=False)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
     total_tokens_used = Column(Integer, default=0, nullable=False)
 
 
@@ -52,4 +52,4 @@ class TokenUsage(Base):
     total_tokens = Column(Integer, default=0, nullable=False)
     model = Column(String, nullable=False)
     cost_cents = Column(Integer, default=0, nullable=False)
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow(), nullable=False)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)

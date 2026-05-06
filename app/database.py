@@ -21,8 +21,9 @@ current_user_id: ContextVar[Optional[str]] = ContextVar(
 engine = create_async_engine(
     settings.database_url,
     echo=settings.debug,
-    pool_size=10,
-    max_overflow=20,
+    pool_size=5,
+    max_overflow=5,
+    pool_timeout=30,
     pool_pre_ping=True,
     # PgBouncer uses transaction pooling - prepared statements must be disabled
     connect_args={"prepared_statement_cache_size": 0},

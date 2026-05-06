@@ -2,9 +2,9 @@ name: CI/CD Pipeline
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "master", "main" ]
   pull_request:
-    branches: [ "main" ]
+    branches: [ "master", "main" ]
 
 jobs:
   lint-and-test:
@@ -38,8 +38,9 @@ jobs:
     - name: Run tests (demo mode — no DB required)
       env:
         DEMO_MODE: "true"
-        SECRET_KEY: "ci-test-secret"
+        SECRET_KEY: "ci-test-secret-key-for-testing-only-32chars"
         OPENAI_API_KEY: "sk-test-placeholder"
+        DATABASE_URL: "postgresql+asyncpg://ci:ci@localhost:5432/ci_test"
       run: |
         pytest -v --tb=short
         

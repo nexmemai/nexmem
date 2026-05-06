@@ -30,7 +30,7 @@ class Embedder:
         """
         Generate embedding for a single text (async-safe).
         """
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         sem = get_nlp_semaphore()
         async with sem:
             return await loop.run_in_executor(
@@ -42,7 +42,7 @@ class Embedder:
         """
         Generate embeddings for multiple texts (async-safe).
         """
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         sem = get_nlp_semaphore()
         async with sem:
             return await loop.run_in_executor(
@@ -70,11 +70,18 @@ class LazyEmbedder:
 
     def __init__(self):
         self._instance: Optional[Embedder] = None
-        self._lock = asyncio.Lock()
+        self._lock: Optional[asyncio.Lock] = None  # Created lazily per event-loop
+
+    def _get_lock(self) -> asyncio.Lock:
+        """Return a lock bound to the current running event loop."""
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+        return self._lock
 
     async def _get(self) -> Embedder:
+        lock = self._get_lock()
         if self._instance is None:
-            async with self._lock:
+            async with lock:
                 if self._instance is None:
                     self._instance = Embedder()
         return self._instance
