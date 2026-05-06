@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
@@ -14,6 +14,7 @@ from app.core.security import (
     create_access_token, generate_api_key
 )
 from app.core.deps import get_current_user
+from app.core.brute_force import check_not_locked, record_failure, clear_failures
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -74,45 +75,52 @@ async def register(
 
 @router.post("/login", response_model=TokenResponse)
 async def login(
+    request: Request,
     credentials: UserLogin,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """Login with email/password. Returns JWT token."""
     if not credentials.email or not credentials.password:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Email and password required"
+            detail="Email and password required",
         )
 
+    # ── Brute-force check (before DB query to fail fast) ──────────────────────
+    await check_not_locked(request, credentials.email)
+
+    # ── Lookup user ───────────────────────────────────────────────────────────
     result = await db.execute(
         select(User).where(User.email == credentials.email)
     )
     user = result.scalar_one_or_none()
 
+    # ── Validate (always record failure, even on unknown email, to prevent
+    #    user-enumeration via timing differences) ──────────────────────────────
+    _INVALID = "Invalid email or password"
+
     if not user or not user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid credentials"
-        )
+        await record_failure(request, credentials.email)
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=_INVALID)
 
     if not user.hashed_password:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Account has no password. Use wallet login or API key."
+            detail="Account has no password. Use wallet login or API key.",
         )
 
     if not verify_password(credentials.password, user.hashed_password):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid credentials"
-        )
+        await record_failure(request, credentials.email)
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=_INVALID)
 
+    # ── Success — clear failure counter and issue token ───────────────────────
+    await clear_failures(credentials.email)
     access_token = create_access_token(subject=str(user.id))
     from app.config import settings
     return TokenResponse(
         access_token=access_token,
         token_type="bearer",
-        expires_in=settings.access_token_expire_hours * 3600
+        expires_in=settings.access_token_expire_hours * 3600,
     )
 
 

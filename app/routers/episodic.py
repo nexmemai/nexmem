@@ -17,9 +17,11 @@ from app.models.user import User
 router = APIRouter(prefix="/agents", tags=["episodic"])
 
 
+_MAX_CONTENT = 32_768   # ~64 KB of UTF-8; matches DB CHECK constraint
+
 class EpisodeCreateRequest(BaseModel):
-    session_id: str
-    content: str
+    session_id: str = Field(..., max_length=256)
+    content: str = Field(..., min_length=1, max_length=_MAX_CONTENT)
     timestamp: Optional[datetime] = None
     metadata: dict = Field(default_factory=dict)
     tags: list[str] = Field(default_factory=list)

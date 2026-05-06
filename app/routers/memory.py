@@ -58,13 +58,16 @@ async def get_or_create_knowledge_node(
     return str(node.id), True
 
 
+_MAX_CONTENT = 32_768   # ~64 KB of UTF-8; matches DB CHECK constraint
+_MAX_QUERY = 4_096      # context queries don't need to be longer than ~4 K chars
+
 class ContextRequest(BaseModel):
-    query: str = Field(..., description="Query to get context for")
-    semantic_top_k: int = Field(5, description="Number of semantic search results")
-    episodic_limit: int = Field(5, description="Number of recent episodes")
-    max_tokens: int = Field(1200, description="Max context tokens")
+    query: str = Field(..., min_length=1, max_length=_MAX_QUERY, description="Query to get context for")
+    semantic_top_k: int = Field(5, ge=1, le=20, description="Number of semantic search results")
+    episodic_limit: int = Field(5, ge=1, le=50, description="Number of recent episodes")
+    max_tokens: int = Field(1200, ge=100, le=8000, description="Max context tokens")
     filters: Optional[Dict] = None
-    app_id: Optional[str] = Field(None, description="Filter by app ID")
+    app_id: Optional[str] = Field(None, max_length=256, description="Filter by app ID")
 
 
 class ContextResponse(BaseModel):
@@ -78,9 +81,9 @@ class ContextResponse(BaseModel):
 
 
 class EpisodeWriteRequest(BaseModel):
-    content: str = Field(..., description="Episode content")
-    session_id: str = Field(..., description="Session identifier")
-    app_id: Optional[str] = None
+    content: str = Field(..., min_length=1, max_length=_MAX_CONTENT, description="Episode content")
+    session_id: str = Field(..., max_length=256, description="Session identifier")
+    app_id: Optional[str] = Field(None, max_length=256)
     tags: List[str] = Field(default_factory=list)
     metadata: Dict[str, Any] = Field(default_factory=dict)
 

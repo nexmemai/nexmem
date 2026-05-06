@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, Column, DateTime, String, Integer
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, String, Integer
 from sqlalchemy.dialects.postgresql import UUID
 
 from app.database import Base
@@ -30,7 +30,7 @@ class APIKey(Base):
     __tablename__ = "api_keys"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     key_hash = Column(String, unique=True, nullable=False)
     name = Column(String, nullable=False)          # e.g. "Telegram Bot", "VS Code"
     scopes = Column(String, default="read,write")
