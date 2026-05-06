@@ -64,6 +64,9 @@ class Settings(BaseSettings):
 
     # ── Observability ──────────────────────────────────────────────────────────
     sentry_dsn: Optional[str] = None
+    # Set METRICS_SECRET_KEY in Render to enable the /metrics endpoint.
+    # Use: Authorization: Bearer <METRICS_SECRET_KEY>
+    metrics_secret_key: Optional[str] = None
     
     # ── CORS ───────────────────────────────────────────────────────────────────
     allowed_origins: List[str] = ["*"]

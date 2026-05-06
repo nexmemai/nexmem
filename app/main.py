@@ -71,15 +71,21 @@ async def lifespan(app: FastAPI):
         from app.services.scheduler import start_scheduler
         start_scheduler()
 
-        # Wrap startup tasks in try/except so the server always binds a port.
-        # On the Render free tier, these can hang due to model downloads or
-        # missing migrations.  A 120-second timeout prevents infinite waits.
-        try:
-            await asyncio.wait_for(rebuild_networkx_graph(), timeout=120)
-        except asyncio.TimeoutError:
-            logger.warning("Graph rebuild timed out after 120s – skipping.")
-        except Exception as exc:
-            logger.warning("Graph rebuild failed – skipping: %s", exc)
+        # Wrap startup tasks in a background task so the server binds the port
+        # immediately. The graph rebuild is kicked off asynchronously after startup.
+        import asyncio
+
+        async def _background_rebuild():
+            """Rebuild NetworkX graph without blocking port binding."""
+            try:
+                await asyncio.wait_for(rebuild_networkx_graph(), timeout=120)
+                logger.info("Background graph rebuild complete.")
+            except asyncio.TimeoutError:
+                logger.warning("Background graph rebuild timed out after 120s – skipped.")
+            except Exception as exc:
+                logger.warning("Background graph rebuild failed – skipped: %s", exc)
+
+        asyncio.create_task(_background_rebuild())
 
         try:
             # Verify vector dimension matches expected 384D
@@ -121,8 +127,9 @@ app = FastAPI(
 # Rate limiting middleware (60 req/min per IP)
 app.add_middleware(RateLimitMiddleware, requests_per_minute=60)
 
-# Task 4.2: Prometheus metrics instrumentator
-Instrumentator().instrument(app).expose(app, endpoint="/metrics")
+# Task 4.2: Prometheus metrics — instrument only (no auto-expose).
+# Metrics are served via /metrics with token auth — see endpoint below.
+_instrumentator = Instrumentator().instrument(app)
 
 # CORS middleware for frontend access
 app.add_middleware(
@@ -229,6 +236,36 @@ async def root():
         "version": "0.1.0",
         "mode": "demo" if settings.demo_mode else "production",
     }
+
+
+@app.get("/metrics")
+async def metrics(request: Request):
+    """
+    Prometheus metrics endpoint \u2014 protected by METRICS_SECRET_KEY.
+
+    Set METRICS_SECRET_KEY in Render env vars, then call with:
+        Authorization: Bearer <METRICS_SECRET_KEY>
+
+    If METRICS_SECRET_KEY is not configured, the endpoint returns 503.
+    """
+    secret = getattr(settings, "metrics_secret_key", None)
+    if not secret:
+        raise HTTPException(
+            status_code=503,
+            detail="Metrics endpoint is disabled (METRICS_SECRET_KEY not set).",
+        )
+
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer ") or auth.removeprefix("Bearer ").strip() != secret:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid or missing metrics token.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+    from fastapi.responses import Response
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 # NOTE: /health/live and /health/ready are handled by health.router

@@ -26,6 +26,8 @@ services:
         sync: false
       - key: SENTRY_DSN
         sync: false
+      - key: METRICS_SECRET_KEY
+        sync: false
       - key: CONSOLIDATION_INTERVAL_MINUTES
         value: "30"
       - key: PYTHON_VERSION
