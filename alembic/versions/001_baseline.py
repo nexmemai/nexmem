@@ -5,10 +5,9 @@ Revises: None
 Create Date: 2026-04-27
 """
 
-from pathlib import Path
-from typing import Sequence, Union
-
 from alembic import op
+import sqlalchemy as sa
+from typing import Sequence, Union
 
 revision: str = "001_baseline"
 down_revision: Union[str, None] = None
@@ -17,16 +16,11 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    """Create the base schema using Alembic migrations only."""
-    # Note: supabase/migrations/*.sql are reference-only.
-    # This migration creates tables programmatically.
-    op.create_table(
-        "episodic_memory",
-        sa.Column("id", sa.UUID(), primary_key=True, server_default=sa.text("uuid_generate_v4()")),
-        sa.Column("user_id", sa.UUID(), nullable=False, index=True),
-        # ... (full table definition)
-    )
-    # Enable extensions
+    """
+    Baseline is handled by Supabase SQL migrations.
+    This is a no-op to allow Alembic to track the versioning chain.
+    """
+    # Ensure extensions exist as a safety measure
     op.execute("CREATE EXTENSION IF NOT EXISTS \"vector\"")
     op.execute("CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\"")
     op.execute("CREATE EXTENSION IF NOT EXISTS \"pg_trgm\"")

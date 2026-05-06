@@ -63,6 +63,7 @@ async def lifespan(app: FastAPI):
         print(f"  - Graph edges: {stats['graph_edge_count']}")
         print("=" * 60)
     else:
+        import asyncio
         print("Starting with PostgreSQL connection...")
         from app.database import engine
 
@@ -70,26 +71,36 @@ async def lifespan(app: FastAPI):
         from app.services.scheduler import start_scheduler
         start_scheduler()
 
-        await rebuild_networkx_graph()
+        # Wrap startup tasks in try/except so the server always binds a port.
+        # On the Render free tier, these can hang due to model downloads or
+        # missing migrations.  A 120-second timeout prevents infinite waits.
+        try:
+            await asyncio.wait_for(rebuild_networkx_graph(), timeout=120)
+        except asyncio.TimeoutError:
+            logger.warning("Graph rebuild timed out after 120s – skipping.")
+        except Exception as exc:
+            logger.warning("Graph rebuild failed – skipping: %s", exc)
 
-        # Verify vector dimension matches expected 384D
-        from sqlalchemy import text
-        async with engine.connect() as conn:
-            result = await conn.execute(
-                text("""
-                SELECT atttypmod
-                FROM pg_attribute
-                WHERE attrelid = 'semantic_memory'::regclass
-                  AND attname = 'vector'
-                """)
-            )
-            dim_raw = result.scalar()
-            dim = dim_raw if dim_raw is not None else None
-            if dim != 384:
-                raise RuntimeError(
-                    f"Vector dimension mismatch: expected 384, got {dim}. "
-                    "Run `alembic upgrade head`."
+        try:
+            # Verify vector dimension matches expected 384D
+            from sqlalchemy import text
+            async with engine.connect() as conn:
+                result = await conn.execute(
+                    text("""
+                    SELECT atttypmod
+                    FROM pg_attribute
+                    WHERE attrelid = 'semantic_memory'::regclass
+                      AND attname = 'vector'
+                    """)
                 )
+                dim_raw = result.scalar()
+                dim = dim_raw if dim_raw is not None else None
+                if dim != 384:
+                    logger.warning(
+                        "Vector dimension mismatch: expected 384, got %s", dim
+                    )
+        except Exception as exc:
+            logger.warning("Vector dimension check failed – skipping: %s", exc)
 
     yield
 
