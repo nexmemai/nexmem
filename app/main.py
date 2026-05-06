@@ -7,7 +7,10 @@ Supports two modes:
 
 from app.config import settings
 from app.routers import episodic, semantic, procedural, graph, rag, auth, health, memory, apps, gdpr
-from app.core.rate_limit import RateLimitMiddleware
+from app.core.rate_limit import limiter
+from slowapi.middleware import SlowAPIMiddleware
+from slowapi.errors import RateLimitExceeded
+from slowapi import _rate_limit_exceeded_handler
 from app.core.logging import configure_logging
 
 from contextlib import asynccontextmanager
@@ -124,8 +127,10 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Rate limiting middleware (60 req/min per IP)
-app.add_middleware(RateLimitMiddleware, requests_per_minute=60)
+# Rate limiting middleware (60 req/min per IP by default, using Redis if available)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
 
 # Task 4.2: Prometheus metrics — instrument only (no auto-expose).
 # Metrics are served via /metrics with token auth — see endpoint below.

@@ -57,9 +57,14 @@ class APIKeyCreateResponse(BaseModel):
 
 class TokenResponse(BaseModel):
     access_token: str
+    refresh_token: Optional[str] = None
     token_type: str = "bearer"
     expires_in: int = Field(..., description="Seconds until expiration")
 
 
 class TokenData(BaseModel):
     user_id: Optional[str] = None
+
+
+class RefreshRequest(BaseModel):
+    refresh_token: str

@@ -7,12 +7,14 @@ from app.models.user import User, APIKey
 from app.schemas.user import (
     UserCreate, UserLogin, UserResponse,
     APIKeyCreate, APIKeyCreateResponse, APIKeyResponse,
-    TokenResponse
+    TokenResponse, RefreshRequest
 )
 from app.core.security import (
     get_password_hash, verify_password,
-    create_access_token, generate_api_key
+    create_access_token, create_refresh_token, generate_api_key,
+    ALGORITHM
 )
+from jose import jwt, JWTError
 from app.core.deps import get_current_user
 from app.core.brute_force import check_not_locked, record_failure, clear_failures
 
@@ -116,12 +118,69 @@ async def login(
     # ── Success — clear failure counter and issue token ───────────────────────
     await clear_failures(credentials.email)
     access_token = create_access_token(subject=str(user.id))
+    refresh_token = create_refresh_token(subject=str(user.id))
     from app.config import settings
     return TokenResponse(
         access_token=access_token,
+        refresh_token=refresh_token,
         token_type="bearer",
         expires_in=settings.access_token_expire_hours * 3600,
     )
+
+
+@router.post("/refresh", response_model=TokenResponse)
+async def refresh_token(
+    request: RefreshRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """Obtain a new access token using a valid refresh token."""
+    from app.config import settings
+    
+    try:
+        payload = jwt.decode(
+            request.refresh_token, settings.secret_key, algorithms=[ALGORITHM]
+        )
+        user_id: str = payload.get("sub")
+        token_type: str = payload.get("type")
+        
+        if user_id is None or token_type != "refresh":
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid refresh token",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+            
+        import uuid
+        try:
+            user_uuid = uuid.UUID(user_id)
+        except ValueError:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid user ID in token")
+            
+        result = await db.execute(select(User).where(User.id == user_uuid))
+        user = result.scalar_one_or_none()
+        
+        if user is None or not user.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found or inactive"
+            )
+            
+        # Issue new tokens
+        access_token = create_access_token(subject=str(user.id))
+        new_refresh_token = create_refresh_token(subject=str(user.id))
+        
+        return TokenResponse(
+            access_token=access_token,
+            refresh_token=new_refresh_token,
+            token_type="bearer",
+            expires_in=settings.access_token_expire_hours * 3600,
+        )
+        
+    except JWTError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
 
 @router.post("/api-keys", response_model=APIKeyCreateResponse, status_code=status.HTTP_201_CREATED)
