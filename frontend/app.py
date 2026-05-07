@@ -12,6 +12,7 @@ Glassmorphism 2.0 Dark Design:
 import streamlit as st
 import requests
 import json
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -328,7 +329,7 @@ st.markdown(GLASSMORPHISM_CSS, unsafe_allow_html=True)
 # API CLIENT
 # ==========================================
 
-API_BASE = st.secrets.get("API_BASE_URL", "http://localhost:8000")
+API_BASE = os.environ.get("API_BASE_URL") or st.secrets.get("API_BASE_URL", "http://localhost:8000")
 
 # Auth token (JWT or API key)
 auth_token = st.text_input(
