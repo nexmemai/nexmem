@@ -55,7 +55,10 @@ scrollbar-color:#6C63FF #080812;
 
 /* ─────────────────── SHARED PRIMITIVES ─────────────────── */
 function GlowButton({ children, className = "", onClick }: any) {
-  const defaultOnClick = () => window.open('https://api.nexmem.ai/auth/signup', '_blank');
+  const defaultOnClick = () => {
+    const dashboardUrl = process.env.NEXT_PUBLIC_DASHBOARD_URL || 'http://localhost:8501';
+    window.open(dashboardUrl, '_blank');
+  };
   const handleClick = onClick || defaultOnClick;
   return (
     <button onClick={handleClick}
@@ -67,7 +70,10 @@ function GlowButton({ children, className = "", onClick }: any) {
   );
 }
 function GhostButton({ children, className = "", onClick }: any) {
-  const defaultOnClick = () => window.open('https://api.nexmem.ai/auth/signup', '_blank');
+  const defaultOnClick = () => {
+    const dashboardUrl = process.env.NEXT_PUBLIC_DASHBOARD_URL || 'http://localhost:8501';
+    window.open(dashboardUrl, '_blank');
+  };
   const handleClick = onClick || defaultOnClick;
   return (
     <button onClick={handleClick}
