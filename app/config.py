@@ -1,7 +1,7 @@
 """Application configuration using pydantic-settings."""
 
 from pydantic_settings import BaseSettings
-from typing import List, Optional
+from typing import List, Optional, Union
 
 from pydantic import field_validator
 
@@ -68,7 +68,7 @@ class Settings(BaseSettings):
     metrics_secret_key: Optional[str] = None
     
     # ── CORS ───────────────────────────────────────────────────────────────────
-    allowed_origins: List[str] = ["*"]
+    allowed_origins: Union[str, List[str]] = ["*"]
 
     @field_validator("allowed_origins", mode="before")
     @classmethod
