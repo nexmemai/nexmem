@@ -29,18 +29,17 @@ class Embedder:
         self.vector_dim = 384  # Fixed to 384D for all-MiniLM-L6-v2
 
     async def embed(self, text: str) -> List[float]:
-        print('Embedder.embed called', flush=True)
+        """
+        Generate embedding for a single text (async-safe).
+        Runs in a thread-pool executor to avoid blocking the event loop.
+        """
         loop = asyncio.get_running_loop()
         sem = get_nlp_semaphore()
-        print('Waiting for sem in Embedder.embed', flush=True)
         async with sem:
-            print('Got sem in Embedder.embed', flush=True)
-            res = await loop.run_in_executor(
+            return await loop.run_in_executor(
                 None,
                 lambda: self._embed_model.encode(text, normalize_embeddings=True).tolist()
             )
-            print('Executor done in Embedder.embed', flush=True)
-            return res
 
     async def embed_batch(self, texts: List[str]) -> List[List[float]]:
         """

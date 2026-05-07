@@ -25,8 +25,12 @@ engine = create_async_engine(
     max_overflow=5,
     pool_timeout=30,
     pool_pre_ping=True,
-    # PgBouncer uses transaction pooling - prepared statements must be disabled
-    connect_args={"prepared_statement_cache_size": 0},
+    connect_args={
+        # PgBouncer uses transaction pooling - prepared statements must be disabled
+        "prepared_statement_cache_size": 0,
+        # asyncpg requires ssl=True in connect_args, not sslmode in the URL
+        "ssl": "require",
+    },
 )
 
 

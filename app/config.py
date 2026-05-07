@@ -29,13 +29,12 @@ class Settings(BaseSettings):
             v = v.replace("postgres://", "postgresql+asyncpg://", 1)
         elif v.startswith("postgresql://") and "+asyncpg" not in v:
             v = v.replace("postgresql://", "postgresql+asyncpg://", 1)
-        # Strip ?ssl= param that asyncpg does not understand
+        # asyncpg does NOT accept sslmode or ssl in the query string.
+        # SSL is handled via connect_args={"ssl": True} in database.py.
         import re
-        v = re.sub(r"[&?]ssl=[^&]*", "", v)
-        # Ensure sslmode=require is present for Supabase
-        if "sslmode" not in v:
-            sep = "&" if "?" in v else "?"
-            v = f"{v}{sep}sslmode=require"
+        v = re.sub(r"[?&]ssl(?:mode)?=[^&]*", "", v)
+        # Clean up any leftover trailing ? or &
+        v = v.rstrip("?&")
         return v
 
     # ── Auth ───────────────────────────────────────────────────────────────────
@@ -70,6 +69,17 @@ class Settings(BaseSettings):
     
     # ── CORS ───────────────────────────────────────────────────────────────────
     allowed_origins: List[str] = ["*"]
+
+    @field_validator("allowed_origins", mode="before")
+    @classmethod
+    def parse_allowed_origins(cls, v):
+        """Accept either a JSON list or comma-separated string from env vars."""
+        if isinstance(v, list):
+            return v
+        if isinstance(v, str):
+            # Handle comma-separated: "https://a.com,https://b.com"
+            return [origin.strip() for origin in v.split(",") if origin.strip()]
+        return v
 
     # ── Frontend ───────────────────────────────────────────────────────────────
     frontend_api_url: str = "http://localhost:8000"
@@ -107,7 +117,8 @@ class Settings(BaseSettings):
             )
 
         if self.allowed_origins == ["*"]:
-            errors.append(
+            import logging
+            logging.getLogger(__name__).warning(
                 "ALLOWED_ORIGINS is '*' which allows any origin. "
                 "Set it to your frontend domain(s) in Render env vars."
             )
