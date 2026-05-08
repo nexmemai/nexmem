@@ -4,11 +4,12 @@ services:
     env: python
     plan: free
     buildCommand: "pip install --upgrade pip && pip install -r requirements.txt"
-    startCommand: "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT"
+    releaseCommand: "alembic upgrade head"
+    startCommand: "uvicorn app.main:app --host 0.0.0.0 --port $PORT"
     healthCheckPath: /health/live
     envVars:
       - key: DATABASE_URL
-        value: postgresql+asyncpg://postgres.***REDACTED_PROJECT_ID***@aws-1-ap-northeast-1.pooler.supabase.com:6543/postgres?sslmode=require
+        sync: false
       - key: REDIS_URL
         fromService:
           type: redis
@@ -21,7 +22,7 @@ services:
       - key: ENVIRONMENT
         value: "production"
       - key: ALLOWED_ORIGINS
-        value: "https://nexmem.onrender.com,https://nexmem.ai"
+        value: "https://nexmem.vercel.app,https://nexmem-1.onrender.com"
       - key: OPENAI_API_KEY
         sync: false
       - key: SENTRY_DSN
@@ -41,7 +42,7 @@ services:
     startCommand: "celery -A app.celery_app.celery_app worker --loglevel=info --concurrency=2"
     envVars:
       - key: DATABASE_URL
-        value: postgresql+asyncpg://postgres.***REDACTED_PROJECT_ID***@aws-1-ap-northeast-1.pooler.supabase.com:6543/postgres?sslmode=require
+        sync: false
       - key: REDIS_URL
         fromService:
           type: redis
@@ -49,6 +50,8 @@ services:
           property: connectionString
       - key: OPENAI_API_KEY
         sync: false
+      - key: SECRET_KEY
+        generateValue: true
       - key: ENVIRONMENT
         value: "production"
       - key: PYTHON_VERSION
@@ -73,6 +76,8 @@ services:
           property: connectionString
       - key: CONSOLIDATION_INTERVAL_MINUTES
         value: "30"
+      - key: SECRET_KEY
+        generateValue: true
       - key: PYTHON_VERSION
         value: "3.11.9"
 

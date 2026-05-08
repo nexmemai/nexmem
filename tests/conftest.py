@@ -11,7 +11,7 @@ import asyncio
 
 # ── Force demo mode before the app module is ever imported ───────────────────
 os.environ.setdefault("DEMO_MODE", "true")
-os.environ.setdefault("SECRET_KEY", "test-secret-key-for-ci-only")
+os.environ.setdefault("SECRET_KEY", "test-secret-key-for-ci-only-32-chars")
 os.environ.setdefault("OPENAI_API_KEY", "sk-test-placeholder")
 
 from typing import AsyncGenerator, Generator

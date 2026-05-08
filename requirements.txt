@@ -21,6 +21,7 @@ redis==5.0.0
 slowapi==0.1.9
 celery==5.4.0
 tenacity==8.3.0
+tiktoken==0.7.0
 asgiref==3.8.1
 structlog==24.1.0
 prometheus-fastapi-instrumentator==7.0.0

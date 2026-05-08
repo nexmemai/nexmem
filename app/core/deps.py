@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime
 
 from app.database import get_db
-from app.database import set_current_user_id, set_rls_context
+from app.database import set_auth_lookup_context, set_current_user_id, set_rls_context
 from app.models.user import User, APIKey
 from app.core import security
 from app.config import settings
@@ -49,14 +49,19 @@ async def get_current_user(
         # Handle API Key
         import hashlib
         key_hash = hashlib.sha256(credentials.encode()).hexdigest()
+        await set_auth_lookup_context(db, api_key_hash=key_hash)
         result = await db.execute(select(APIKey).where(APIKey.key_hash == key_hash))
         api_key_obj = result.scalar_one_or_none()
         
         if not api_key_obj or not api_key_obj.is_active:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key")
-            
+
+        request.state.current_user_id = str(api_key_obj.user_id)
+        set_current_user_id(str(api_key_obj.user_id))
+        await set_rls_context(db, str(api_key_obj.user_id))
         api_key_obj.last_used_at = datetime.utcnow()
         await db.commit()
+        await set_rls_context(db, str(api_key_obj.user_id))
         
         result = await db.execute(select(User).where(User.id == api_key_obj.user_id))
         user = result.scalar_one_or_none()

@@ -15,7 +15,7 @@ pytestmark = pytest.mark.skipif(
 # Test user data
 TEST_USER_ID = None
 TEST_USER_EMAIL = f"test_{uuid.uuid4().hex}@example.com"
-TEST_USER_PASSWORD = "testpassword123"
+TEST_USER_PASSWORD = "TestPassword123"
 
 
 @pytest.fixture(scope="module")

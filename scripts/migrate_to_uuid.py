@@ -1,10 +1,21 @@
 import asyncio
+import os
+
 import asyncpg
 
-DB_URL = "postgresql://postgres:***REDACTED_PASSWORD***@db.***REDACTED_PROJECT_ID***.supabase.co:5432/postgres"
+
+def get_database_url() -> str:
+    database_url = os.environ["DATABASE_URL"].strip()
+    if not database_url:
+        raise RuntimeError("DATABASE_URL must be set before running this script.")
+    return (
+        database_url
+        .replace("postgresql+asyncpg://", "postgresql://", 1)
+        .replace("postgresql+psycopg2://", "postgresql://", 1)
+    )
 
 async def migrate_types():
-    conn = await asyncpg.connect(DB_URL)
+    conn = await asyncpg.connect(get_database_url())
     try:
         print("[MIGRATE] Migrating user_id columns from TEXT to UUID...")
         tables = [

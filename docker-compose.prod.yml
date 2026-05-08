@@ -32,8 +32,19 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
-    command: >
-      sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2"
+    # Migrations are not part of web startup. Render runs them via releaseCommand.
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2
+
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    profiles: ["migrate"]
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+      - SECRET_KEY=${SECRET_KEY}
+      - ENVIRONMENT=production
+    command: alembic upgrade head
 
   celery_worker:
     build:

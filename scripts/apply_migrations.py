@@ -2,8 +2,17 @@ import asyncio
 import asyncpg
 import os
 
-# asyncpg expects postgresql:// or postgres://
-DB_URL = "postgresql://postgres:***REDACTED_PASSWORD***@db.***REDACTED_PROJECT_ID***.supabase.co:5432/postgres"
+
+def get_database_url() -> str:
+    database_url = os.environ["DATABASE_URL"].strip()
+    if not database_url:
+        raise RuntimeError("DATABASE_URL must be set before running this script.")
+    # asyncpg expects postgresql:// or postgres://, not SQLAlchemy driver URLs.
+    return (
+        database_url
+        .replace("postgresql+asyncpg://", "postgresql://", 1)
+        .replace("postgresql+psycopg2://", "postgresql://", 1)
+    )
 
 async def run_sql_file(conn, file_path):
     print(f"Running {file_path}...")
@@ -23,7 +32,7 @@ async def run_sql_file(conn, file_path):
 
 async def main():
     print("Connecting to Supabase...")
-    conn = await asyncpg.connect(DB_URL)
+    conn = await asyncpg.connect(get_database_url())
     try:
         # Run 001
         await run_sql_file(conn, "supabase/migrations/001_initial_schema.sql")

@@ -2,7 +2,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
-from app.database import get_db
+from app.database import async_session, get_db, set_auth_lookup_context, set_rls_context
+from app.config import settings
 from app.models.user import User, APIKey
 from app.schemas.user import (
     UserCreate, UserLogin, UserResponse,
@@ -17,6 +18,7 @@ from app.core.security import (
 from jose import jwt, JWTError
 from app.core.deps import get_current_user
 from app.core.brute_force import check_not_locked, record_failure, clear_failures
+from app.core.usage_quota import get_empty_usage_quota_status, get_usage_quota_status
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -37,6 +39,12 @@ async def register(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Password required for email registration"
         )
+
+    await set_auth_lookup_context(
+        db,
+        email=user_data.email,
+        wallet_address=user_data.wallet_address,
+    )
 
     if user_data.email:
         existing = await db.execute(
@@ -70,6 +78,7 @@ async def register(
     )
     db.add(user)
     await db.commit()
+    await set_rls_context(db, str(user.id))
     await db.refresh(user)
 
     return user
@@ -92,6 +101,7 @@ async def login(
     await check_not_locked(request, credentials.email)
 
     # ── Lookup user ───────────────────────────────────────────────────────────
+    await set_auth_lookup_context(db, email=credentials.email)
     result = await db.execute(
         select(User).where(User.email == credentials.email)
     )
@@ -155,7 +165,8 @@ async def refresh_token(
             user_uuid = uuid.UUID(user_id)
         except ValueError:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid user ID in token")
-            
+
+        await set_rls_context(db, str(user_uuid))
         result = await db.execute(select(User).where(User.id == user_uuid))
         user = result.scalar_one_or_none()
         
@@ -201,6 +212,7 @@ async def create_api_key(
     )
     db.add(api_key)
     await db.commit()
+    await set_rls_context(db, str(current_user.id))
     await db.refresh(api_key)
 
     return APIKeyCreateResponse(
@@ -256,3 +268,15 @@ async def get_current_user_info(
 ):
     """Get current user info."""
     return current_user
+
+
+@router.get("/me/usage")
+async def get_current_user_usage(
+    current_user: User = Depends(get_current_user),
+):
+    """Get current user's monthly token usage quota status."""
+    if settings.demo_mode:
+        return get_empty_usage_quota_status(current_user)
+    async with async_session() as db:
+        await set_rls_context(db, str(current_user.id))
+        return await get_usage_quota_status(db, current_user)

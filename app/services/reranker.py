@@ -64,7 +64,7 @@ async def rerank_results(
     # Get scores from Cross-Encoder (run in executor for async)
     try:
         reranker = get_reranker()
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         scores = await loop.run_in_executor(
             None, reranker.predict, pairs
         )

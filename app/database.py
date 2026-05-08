@@ -4,13 +4,13 @@ from contextvars import ContextVar
 from typing import Optional
 
 from fastapi import Request
-from sqlalchemy import event, text
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     create_async_engine,
     async_sessionmaker,
 )
-from sqlalchemy.orm import DeclarativeBase, Session
+from sqlalchemy.orm import DeclarativeBase
 from app.config import settings
 
 current_user_id: ContextVar[Optional[str]] = ContextVar(
@@ -55,16 +55,25 @@ async def set_rls_context(session: AsyncSession, user_id: Optional[str]) -> None
     )
 
 
-@event.listens_for(Session, "after_begin")
-def set_rls_context_on_begin(session, transaction, connection) -> None:
-    """Apply request-local RLS context to every PostgreSQL transaction."""
-    user_id = current_user_id.get()
-    if not user_id or connection.dialect.name != "postgresql":
-        return
-    connection.execute(
-        text("SELECT set_config('app.current_user_id', :uid, true)"),
-        {"uid": str(user_id)},
-    )
+async def set_auth_lookup_context(
+    session: AsyncSession,
+    *,
+    email: Optional[str] = None,
+    wallet_address: Optional[str] = None,
+    api_key_hash: Optional[str] = None,
+) -> None:
+    """Apply narrow transaction-local lookup values needed before auth is established."""
+    values = {
+        "app.auth_email": email,
+        "app.auth_wallet_address": wallet_address,
+        "app.api_key_hash": api_key_hash,
+    }
+    for key, value in values.items():
+        if value:
+            await session.execute(
+                text("SELECT set_config(:key, :value, true)"),
+                {"key": key, "value": str(value)},
+            )
 
 
 # Create async session factory

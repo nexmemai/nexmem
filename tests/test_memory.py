@@ -33,7 +33,7 @@ async def test_register_user(client: AsyncClient):
     """Test user registration works."""
     response = await client.post("/api/v1/auth/register", json={
         "email": "newuser@example.com",
-        "password": "securepassword123"
+        "password": "SecurePassword123"
     })
     assert response.status_code == 201
     data = response.json()
@@ -45,7 +45,7 @@ async def test_register_user(client: AsyncClient):
 @pytest.mark.asyncio
 async def test_register_duplicate_email(client: AsyncClient):
     """Test registering with duplicate email fails."""
-    user_data = {"email": "duplicate@example.com", "password": "password123"}
+    user_data = {"email": "duplicate@example.com", "password": "Password123"}
     await client.post("/api/v1/auth/register", json=user_data)
 
     response = await client.post("/api/v1/auth/register", json=user_data)
@@ -58,12 +58,12 @@ async def test_login_success(client: AsyncClient):
     """Test login with valid credentials returns token."""
     await client.post("/api/v1/auth/register", json={
         "email": "logintest@example.com",
-        "password": "password123"
+        "password": "Password123"
     })
 
     response = await client.post("/api/v1/auth/login", json={
         "email": "logintest@example.com",
-        "password": "password123"
+        "password": "Password123"
     })
     assert response.status_code == 200
     data = response.json()
@@ -76,7 +76,7 @@ async def test_login_invalid_credentials(client: AsyncClient):
     """Test login with invalid credentials fails."""
     response = await client.post("/api/v1/auth/login", json={
         "email": "nonexistent@example.com",
-        "password": "wrongpassword"
+        "password": "WrongPassword123"
     })
     assert response.status_code == 401
 
@@ -161,11 +161,11 @@ async def test_user_isolation(auth_headers: dict, client: AsyncClient):
     new_client = AsyncClient(base_url="http://test")
     await new_client.post("/api/v1/auth/register", json={
         "email": "user_b@example.com",
-        "password": "password123"
+        "password": "Password123"
     })
     login_response = await new_client.post("/api/v1/auth/login", json={
         "email": "user_b@example.com",
-        "password": "password123"
+        "password": "Password123"
     })
     user_b_token = login_response.json()["access_token"]
     user_b_headers = {"Authorization": f"Bearer {user_b_token}"}

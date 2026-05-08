@@ -133,7 +133,7 @@ async def extract_entities_and_actions(
     engram_processor,
 ) -> Dict[str, Any]:
     """Async wrapper for NLP extraction with semaphore."""
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     sem = get_nlp_semaphore()
     async with sem:
         return await loop.run_in_executor(

@@ -64,7 +64,7 @@ class TestAuthentication:
         """Login with incorrect password returns 401."""
         creds = {"email": "wrong@test.com", "password": "Pass!1234"}
         await client.post("/api/v1/auth/register", json=creds)
-        r = await client.post("/api/v1/auth/login", json={"email": "wrong@test.com", "password": "BAD"})
+        r = await client.post("/api/v1/auth/login", json={"email": "wrong@test.com", "password": "WrongPass123"})
         assert r.status_code == 401
 
     @pytest.mark.asyncio

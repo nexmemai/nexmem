@@ -7,13 +7,26 @@ on:
       - "nexmem-landing/**"
 
 jobs:
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Gitleaks Secret Scan
+      uses: gitleaks/gitleaks-action@v2
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   deploy:
+    needs: secret-scan
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: nexmem-landing
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
     
     - name: Setup Node.js
       uses: actions/setup-node@v3
@@ -40,4 +53,5 @@ jobs:
         vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
         vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
         working-directory: nexmem-landing
-        vercel-args: "--prod"
+        # Automated deploys create Vercel previews. Promote to production manually after review.
+        vercel-args: ""

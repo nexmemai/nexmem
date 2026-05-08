@@ -1,4 +1,3 @@
-print("[EMERGENCY DEBUG] Alembic env.py starting...")
 import sys
 import os
 import re
@@ -7,7 +6,6 @@ from sqlalchemy import engine_from_config, pool
 from alembic import context
 from dotenv import load_dotenv
 
-print("[EMERGENCY DEBUG] Imports successful, setting path...")
 # ✅ Add project root to Python path so 'app' module is found on Render
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -25,43 +23,33 @@ if config.config_file_name is not None:
 from app.models import Base
 target_metadata = Base.metadata
 
-# Get DATABASE_URL from environment
-database_url = os.getenv('DATABASE_URL', '').strip()
+# Get DATABASE_URL from environment only; migrations must fail closed if it is missing.
+try:
+    database_url = os.environ["DATABASE_URL"].strip()
+except KeyError as exc:
+    raise RuntimeError("DATABASE_URL must be set before running Alembic migrations.") from exc
 
-# 🛑 FAIL-SAFE OVERRIDE: 
-# If Render dashboard has a stale/broken IPv6 hostname, force the Tokyo pooler.
-if "db.***REDACTED_PROJECT_ID***" in database_url or not database_url:
-    print("[Alembic] Stale/Missing DATABASE_URL detected. Forcing Tokyo pooler override.")
-    database_url = "postgresql://postgres.***REDACTED_PROJECT_ID***:***REDACTED_PASSWORD***@aws-1-ap-northeast-1.pooler.supabase.com:6543/postgres?sslmode=require"
+if not database_url:
+    raise RuntimeError("DATABASE_URL must be set before running Alembic migrations.")
 
-# ✅ Handle asyncpg prefix - convert to psycopg2 for Alembic sync mode
-# ✅ Handle asyncpg prefix - convert to psycopg2 for Alembic sync mode
+# Alembic uses SQLAlchemy's sync engine, so convert app async URLs to psycopg2.
 if "+asyncpg" in database_url:
     database_url = database_url.replace("+asyncpg", "+psycopg2")
-elif database_url.startswith('postgres://'):
-    database_url = database_url.replace('postgres://', 'postgresql+psycopg2://', 1)
-elif database_url.startswith('postgresql://'):
-    database_url = database_url.replace('postgresql://', 'postgresql+psycopg2://', 1)
+elif database_url.startswith("postgres://"):
+    database_url = database_url.replace("postgres://", "postgresql+psycopg2://", 1)
+elif database_url.startswith("postgresql://"):
+    database_url = database_url.replace("postgresql://", "postgresql+psycopg2://", 1)
 
-# ✅ Fix SSL parameter for psycopg2 (Alembic) compatibility
-# 1. First, strip out ANY existing ssl parameters (ssl, SSL, sslmode, etc.) to start clean
-database_url = re.sub(r'([?&])ssl[^=]*=[^&]*', '', database_url, flags=re.I)
-# 2. Clean up any double ampersands or trailing separators left by the stripping
+# psycopg2 expects sslmode in the URL; normalize any incoming SSL parameter first.
+database_url = re.sub(r"([?&])ssl[^=]*=[^&]*", "", database_url, flags=re.I)
 database_url = database_url.replace("&&", "&").replace("?&", "?").rstrip("?&")
-# 3. Forcefully add the correct psycopg2 parameter
-if "?" in database_url:
-    database_url += "&sslmode=require"
-else:
-    database_url += "?sslmode=require"
+database_url += "&sslmode=require" if "?" in database_url else "?sslmode=require"
 
-# ✅ Update the sqlalchemy.url in config (escape % for interpolation)
+# Update the sqlalchemy.url in config (escape % for interpolation).
 final_url = database_url.replace("%", "%%")
 config.set_main_option('sqlalchemy.url', final_url)
 
-print(f"[Alembic] Final Connection URL (masked): {database_url.split('@')[-1] if '@' in database_url else 'hidden'}")
-sys.stdout.flush()
-
-print(f"[Alembic] Connecting to: {database_url[:60]}...")
+print("[Alembic] DATABASE_URL loaded from environment.")
 sys.stdout.flush()
 
 def run_migrations_offline() -> None:

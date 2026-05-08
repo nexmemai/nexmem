@@ -321,7 +321,7 @@ class EngramProcessor:
 
     async def process_async(self, text: str, user_id: str) -> Dict[str, Any]:
         """Async wrapper - processes text without blocking the event loop."""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         sem = get_nlp_semaphore()
         async with sem:
             return await loop.run_in_executor(

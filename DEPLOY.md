@@ -27,13 +27,14 @@ git push your changes to GitHub
    - **Runtime**: Docker
    - **Plan**: Free
 
-4. Set environment variables:
+4. Set environment variables in the Render dashboard. Do not commit real values
+   to `render.yaml`, scripts, docs, or `.env` files:
    ```
-   DATABASE_URL=postgresql+asyncpg://user:pass@host:5432/db
-   OPENAI_API_KEY=sk-...
-   SECRET_KEY=<generate-with: python -c "import secrets; print(secrets.token_hex(32))">
+   DATABASE_URL=<Supabase pooler URL stored as a Render secret>
+   OPENAI_API_KEY=<stored as a Render secret>
+   SECRET_KEY=<stored as a Render secret; generate with secrets.token_hex(32)>
    ENVIRONMENT=production
-   ALLOWED_ORIGINS=https://your-frontend-url.onrender.com
+   ALLOWED_ORIGINS=https://your-frontend.example
    ```
 
 5. Set health check path: `/health/live`
@@ -47,20 +48,34 @@ git push your changes to GitHub
 4. Add to Backend environment variables
 
 ### 5. Run Initial Migration
-The Dockerfile runs `alembic upgrade head` automatically on startup.
+On Render, migrations run through `releaseCommand: "alembic upgrade head"` in
+`render.yaml`. The web start command should only start the API process.
+Do not add Alembic to the Dockerfile `CMD` or any web process startup command.
 
-To run manually:
+To run manually against a non-production database:
 ```bash
+export DATABASE_URL='<non-production database URL>'
 alembic upgrade head
+```
+
+For local Docker production-style testing, run migrations explicitly before the
+API starts:
+```bash
+docker compose -f docker-compose.prod.yml --profile migrate run --rm migrate
+docker compose -f docker-compose.prod.yml up --build api
 ```
 
 ### 6. Seed Demo Data
 ```bash
-# Set your DATABASE_URL first
+# Set DATABASE_URL in your shell first. Never paste production URLs into scripts.
 python scripts/seed_demo.py
 ```
 
 ## Frontend Deployment (Streamlit Cloud)
+
+The repo's Vercel workflow for `nexmem-landing/` is preview-first. Automated
+pushes should create Vercel preview deployments only. Promote to production from
+Vercel after reviewing the preview URL.
 
 ### 1. Update Streamlit Secrets
 Create `.streamlit/secrets.toml`:
@@ -78,11 +93,11 @@ API_BASE_URL = "https://your-backend-url.onrender.com"
 
 For local production testing:
 ```bash
-# Copy production env
+# Copy local operator env; do not commit it
 cp .env.production .env
 
 # Fill in your values
-# DATABASE_URL, OPENAI_API_KEY, SECRET_KEY
+# DATABASE_URL, OPENAI_API_KEY, SECRET_KEY, ALLOWED_ORIGINS
 
 # Deploy
 docker-compose -f docker-compose.prod.yml up --build

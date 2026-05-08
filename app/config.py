@@ -3,7 +3,15 @@
 from pydantic_settings import BaseSettings
 from typing import List, Optional, Union
 
-from pydantic import field_validator
+from pydantic import Field, field_validator
+
+
+LOCAL_DEV_ALLOWED_ORIGINS = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:8501",
+    "http://127.0.0.1:8501",
+]
 
 
 class Settings(BaseSettings):
@@ -40,7 +48,7 @@ class Settings(BaseSettings):
     # ── Auth ───────────────────────────────────────────────────────────────────
     # IMPORTANT: Set a strong random value in Render env vars.
     # Generate one with: python -c "import secrets; print(secrets.token_hex(32))"
-    secret_key: str = "local-dev-secret-change-this-before-production"
+    secret_key: str = Field(..., min_length=32)
     access_token_expire_hours: int = 4
 
     # ── OpenAI ─────────────────────────────────────────────────────────────────
@@ -68,7 +76,7 @@ class Settings(BaseSettings):
     metrics_secret_key: Optional[str] = None
     
     # ── CORS ───────────────────────────────────────────────────────────────────
-    allowed_origins: Union[str, List[str]] = ["*"]
+    allowed_origins: Union[str, List[str]] = LOCAL_DEV_ALLOWED_ORIGINS
 
     @field_validator("allowed_origins", mode="before")
     @classmethod
@@ -79,7 +87,7 @@ class Settings(BaseSettings):
         if isinstance(v, str):
             v = v.strip()
             if not v:
-                return ["*"]
+                return []
             
             # Try parsing as JSON first (to handle ["a", "b"] format)
             if v.startswith("[") and v.endswith("]"):
@@ -112,20 +120,17 @@ class Settings(BaseSettings):
 
     def validate_production(self) -> None:
         """Strict validation for production mode — raises on insecure config."""
-        if self.demo_mode:
+        if self.environment.lower() != "production":
             return
-
-        errors = []
 
         if (
             self.secret_key.startswith("local-dev")
             or self.secret_key == "changeme_in_production"
             or len(self.secret_key) < 32
         ):
-            import logging
-            logging.getLogger(__name__).warning(
+            raise RuntimeError(
                 "SECRET_KEY is too weak or is the default value. "
-                "Please generate a strong one with: python -c \"import secrets; print(secrets.token_hex(32))\""
+                "Generate a strong one with: python -c \"import secrets; print(secrets.token_hex(32))\""
             )
 
         if not self.openai_api_key or self.openai_api_key == "sk-placeholder":
@@ -134,16 +139,11 @@ class Settings(BaseSettings):
                 "OPENAI_API_KEY is missing or placeholder — AI summarisation features disabled."
             )
 
-        if self.allowed_origins == ["*"]:
-            import logging
-            logging.getLogger(__name__).warning(
-                "ALLOWED_ORIGINS is '*' which allows any origin. "
-                "Set it to your frontend domain(s) in Render env vars."
+        if not self.allowed_origins or "*" in self.allowed_origins:
+            raise RuntimeError(
+                "ALLOWED_ORIGINS must explicitly list trusted frontend origins in production. "
+                "Do not use '*' or an empty value when CORS credentials are enabled."
             )
-
-        # Removed the RuntimeError raise to prevent startup hangs.
-        pass
-
     class Config:
         # Reads .env first, then .env.local for local overrides
         env_file = [".env", ".env.local"]

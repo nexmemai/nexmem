@@ -1,76 +1,127 @@
-# 🚀 NexMem Deployment Guide (Render + Supabase)
+# NexMem Deployment Guide: Render + Supabase
 
-This document contains the definitive configuration requirements for successfully deploying the NexMem API to **Render** using **Supabase** as the database provider.
+This is the production source of truth for deploying the NexMem API to Render with Supabase PostgreSQL.
 
----
+## Secret Handling Rules
 
-## 🛠 1. Database Setup (Supabase)
+- `DATABASE_URL` must be provided only through environment variables or the Render dashboard.
+- Never commit a real database hostname, username, password, pooler URL, or copied connection string.
+- `alembic/env.py` intentionally fails if `DATABASE_URL` is missing.
+- `render.yaml` must keep `DATABASE_URL` as `sync: false`.
+- Local `.env.local` and `.env.production` files are operator-owned secrets and must stay out of git.
 
-NexMem requires the **Supabase Connection Pooler** for compatibility with Render's network (which does not support IPv6-only direct hostnames).
+## Supabase Database URL
 
-### **Pooler Configuration**
-1. Go to your **Supabase Dashboard** -> **Settings** -> **Database**.
-2. Scroll down to the **Connection Pooler** section.
-3. **Mode**: Set to `Transaction` (recommended).
-4. **Hostname**: Use the pooler hostname (e.g., `aws-0-ap-south-1.pooler.supabase.com`).
-5. **Port**: `6543` (This is critical. Do **not** use 5432).
-6. **User**: `postgres.[your-project-ref]`
+Use the Supabase connection pooler for Render. In Supabase Dashboard, go to **Settings -> Database -> Connection Pooler**.
 
-### **Password Encoding**
-If your database password contains special characters, they **must** be URL-encoded in your connection string:
-- `@` → `%40`
-- `#` → `%23`
-- `:` → `%3A`
+Expected Render value format:
 
----
+```text
+DATABASE_URL=postgresql+asyncpg://<pooler-user>:<url-encoded-password>@<pooler-host>:6543/postgres?sslmode=require
+```
 
-## 🌐 2. Render Configuration
+Notes:
+- Use transaction pooler mode.
+- URL-encode special characters in the password.
+- Do not paste this value into `render.yaml`, docs, scripts, tests, or commit messages.
 
-### **Environment Variables**
-Configure these in the **Render Dashboard** under **Environment**:
+## Render Configuration
 
-| Key | Value | Description |
-| :--- | :--- | :--- |
-| `DATABASE_URL` | `postgresql+asyncpg://user:pass@host:6543/postgres` | Your pooler connection string. |
-| `DEMO_MODE` | `false` | **Required** to use the database instead of in-memory storage. |
-| `PYTHON_VERSION` | `3.11.9` | Matches the project's required Python version. |
-| `PORT` | `8000` | Render will typically set this automatically. |
+`render.yaml` defines the service wiring. Set secret values in Render Dashboard under each service's **Environment** tab.
 
-### **Commands**
-- **Build Command**: `pip install -r requirements.txt`
-- **Start Command**: `alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT`
+Required backend secrets:
 
----
+```text
+DATABASE_URL=<Supabase pooler URL>
+OPENAI_API_KEY=<OpenAI API key>
+SECRET_KEY=<64+ hex chars from secrets.token_hex(32)>
+```
 
-## 🛡 3. Critical Technical Safeguards
+Required non-secret production values:
 
-The following features are implemented in the code to ensure stability on Render:
+```text
+DEMO_MODE=false
+ENVIRONMENT=production
+ALLOWED_ORIGINS=https://nexmem.vercel.app,https://nexmem-1.onrender.com
+```
 
-1.  **Fail-Safe Override**: If the app detects a direct Supabase hostname (which often fails on Render), it will attempt to redirect to the verified Mumbai pooler.
-2.  **Alembic sys.path Hack**: `alembic/env.py` includes a path injection to ensure it can find the `app` module at runtime.
-3.  **Driver Synchronization**:
-    *   The **App** uses `asyncpg` for high-performance async queries.
-    *   **Alembic** uses `psycopg2` for synchronous schema migrations.
-    *   The system automatically handles the conversion between these drivers.
+Render command separation:
 
----
+```text
+Build Command:   pip install --upgrade pip && pip install -r requirements.txt
+Release Command: alembic upgrade head
+Start Command:   uvicorn app.main:app --host 0.0.0.0 --port $PORT
+```
 
-## 🔍 4. Troubleshooting
+The web start command must not run migrations. Migrations run once through Render's release command before the new service instance is promoted.
 
-### **"Network is unreachable"**
-- **Cause**: You are likely using the direct Supabase hostname instead of the Pooler.
-- **Fix**: Switch the host to the `pooler.supabase.com` address and port `6543`.
+Production migration source of truth: `render.yaml` `releaseCommand`. Do not add
+`alembic upgrade head` to `startCommand`, the root `Dockerfile` `CMD`, or the API
+web command in Docker Compose. For local Docker migration checks, run the
+migration command explicitly:
 
-### **"ModuleNotFoundError: No module named 'app'"**
-- **Cause**: The Python path is not correctly set for the Alembic process.
-- **Fix**: This is handled in the current `alembic/env.py` via `sys.path.insert`.
+```bash
+docker compose -f docker-compose.prod.yml --profile migrate run --rm migrate
+```
 
-### **"Invalid interpolation"**
-- **Cause**: A `%` character in your password is being misinterpreted by the config parser.
-- **Fix**: The code automatically escapes `%` to `%%` for Alembic.
+## Frontend Preview Deploys
 
----
+The GitHub workflow for `nexmem-landing/` creates a Vercel preview deployment.
+It intentionally does not pass `--prod`. Promote a reviewed preview to
+production from Vercel after verifying the preview URL against the intended API
+origin.
 
-## ✅ 5. Health Check
-Once deployed, verify your service is alive at:
-`https://your-service-name.onrender.com/health/live`
+## Rotation Checklist
+
+Complete these steps whenever a database URL or password has been exposed:
+
+1. Rotate the Supabase database password in Supabase Dashboard.
+2. Build a new `DATABASE_URL` using the rotated password and the Supabase pooler host.
+3. Update `DATABASE_URL` in Render for `nexmem-api`.
+4. Update `DATABASE_URL` in Render for `nexmem-celery-worker`.
+5. Trigger a Render deploy and confirm the release command runs `alembic upgrade head`.
+6. Confirm the web service starts with the `uvicorn` start command.
+7. Run the Supabase verification queries below.
+8. Review git history, issue trackers, build logs, chat transcripts, and copied reports for leaked connection strings. Rotate again if a real credential appears anywhere outside the secret manager.
+
+## Verification
+
+Local env-only migration check:
+
+```bash
+export DATABASE_URL='<non-production database URL>'
+alembic upgrade head
+```
+
+Render dashboard checks:
+
+- `DATABASE_URL` is present as a secret env var on `nexmem-api`.
+- `DATABASE_URL` is present as a secret env var on `nexmem-celery-worker`.
+- `render.yaml` shows `DATABASE_URL` with `sync: false`.
+- Latest deploy logs show the release command running migrations before the service starts.
+- Runtime logs show startup without printing the connection string.
+
+Supabase checks after deploy:
+
+```sql
+SELECT now();
+
+SELECT tablename, rowsecurity, forcerowsecurity
+FROM pg_tables
+WHERE schemaname = 'public'
+ORDER BY tablename;
+
+SELECT version_num
+FROM alembic_version;
+```
+
+Application checks:
+
+```bash
+curl -fsS https://<render-service>.onrender.com/health/live
+curl -fsS https://<render-service>.onrender.com/health/ready
+```
+
+## Gitleaks Note
+
+The repository now has CI secret scanning, but full-history scanning can still fail if old commits contain leaked credentials. If that happens, do not bypass the scan. Rotate the exposed secret, decide whether history rewrite is appropriate for the repository, and record the leak as remediated only after the old credential is invalid.

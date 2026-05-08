@@ -6,12 +6,17 @@ import time
 import structlog
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, text
-from app.database import get_db
+from app.database import get_db, set_rls_context
 from app.config import settings
 from app.core.deps import get_current_user
+from app.core.usage_quota import (
+    enforce_usage_quota,
+    estimate_rag_request_tokens,
+    quota_headers,
+)
 from app.models.user import User
 from app.services.retriever import get_retrieval_context
 from app.services.reranker import get_top_context
@@ -70,6 +75,7 @@ from app.schemas.memory import RAGRequest, RAGResponse
 @router.post("/rag/chat", response_model=RAGResponse)
 async def rag_chat(
     request: RAGRequest,
+    response: Response,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -123,7 +129,7 @@ async def rag_chat(
             ]
 
         try:
-            from app.services.llm import llm_service
+            from app.services.llm import PromptBudgetExceededError, llm_service
             llm_result = await asyncio.to_thread(
                 llm_service.generate_rag_response,
                 user_message=message,
@@ -147,6 +153,8 @@ async def rag_chat(
                 model=settings.openai_llm_model,
                 latency_ms=llm_result.get("latency_ms", 0)
             )
+        except PromptBudgetExceededError as e:
+            raise HTTPException(status_code=413, detail=str(e))
         except Exception as e:
             logger.warning("llm_generation_failed", error=str(e), user_id=user_id)
             reply = _generate_demo_reply(message, episodic_context, semantic_context, procedural_context)
@@ -191,10 +199,22 @@ async def rag_chat(
     # Production mode with PostgreSQL
     from app.models.memory import EpisodicMemory, ProceduralMemory, KnowledgeNode
     from app.services.embedder import embedder
-    from app.services.llm import llm_service
+    from app.services.llm import PromptBudgetExceededError, llm_service, track_token_usage
 
     # Extract app_id from request
     app_id = request.app_id
+
+    initial_estimated_tokens = estimate_rag_request_tokens(
+        user_message=message,
+        model=llm_service.model,
+    )
+    quota_status = await enforce_usage_quota(
+        db,
+        current_user,
+        estimated_tokens=initial_estimated_tokens,
+        acquire_lock=True,
+    )
+    response.headers.update(quota_headers(quota_status))
     
     # Use hybrid retrieval
     try:
@@ -254,6 +274,23 @@ async def rag_chat(
         if proc:
             procedural_context = {"settings": proc.settings, "workflows": proc.workflows}
 
+    estimated_tokens = estimate_rag_request_tokens(
+        user_message=message,
+        episodic_context=episodic_context,
+        semantic_context=semantic_context,
+        procedural_context=procedural_context,
+        graph_context=graph_context,
+        model=llm_service.model,
+    )
+    quota_status = await enforce_usage_quota(
+        db,
+        current_user,
+        estimated_tokens=estimated_tokens,
+    )
+    response.headers.update(quota_headers(quota_status))
+
+    llm_succeeded = False
+    llm_latency_ms = 0
     try:
         llm_result = await asyncio.to_thread(
             llm_service.generate_rag_response,
@@ -261,24 +298,65 @@ async def rag_chat(
             semantic_context=semantic_context, procedural_context=procedural_context,
             graph_context=graph_context,
         )
-        reply, prompt_tokens, completion_tokens = llm_result["reply"], llm_result.get("prompt_tokens", 0), llm_result.get("completion_tokens", 0)
-        
-        # Task 4.4: Cost/Token Tracking
-        logger.info(
-            "llm_token_usage",
-            app_id=current_user.app_id,
-            user_id=user_id,
-            endpoint="rag_chat_production",
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            model=settings.openai_llm_model,
-            latency_ms=llm_result.get("latency_ms", 0)
-        )
+        reply = llm_result["reply"]
+        prompt_tokens = llm_result.get("prompt_tokens", 0)
+        completion_tokens = llm_result.get("completion_tokens", 0)
+        llm_latency_ms = llm_result.get("latency_ms", 0)
+        llm_succeeded = True
+    except PromptBudgetExceededError as e:
+        raise HTTPException(status_code=413, detail=str(e))
     except Exception as e:
         logger.warning("llm_service_error", error=str(e), user_id=user_id)
         reply = _generate_demo_reply(message, episodic_context, semantic_context, procedural_context)
         prompt_tokens = len(message.split()) * 2
         completion_tokens = len(reply.split()) * 2
+
+    if llm_succeeded:
+        try:
+            await track_token_usage(
+                db=db,
+                user_id=user_id,
+                app_id=app_id,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                model=llm_service.model,
+            )
+            logger.info(
+                "llm_token_usage",
+                app_id=current_user.app_id,
+                user_id=user_id,
+                endpoint="rag_chat_production",
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                model=settings.openai_llm_model,
+                latency_ms=llm_latency_ms,
+            )
+        except Exception as e:
+            logger.error(
+                "token_usage_tracking_failed",
+                error=str(e),
+                user_id=user_id,
+                app_id=app_id,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                exc_info=True,
+            )
+            response.headers["X-Token-Usage-Tracking"] = "failed"
+            try:
+                await db.rollback()
+                await set_rls_context(db, user_id)
+            except Exception as recovery_error:
+                logger.error(
+                    "token_usage_tracking_recovery_failed",
+                    error=str(recovery_error),
+                    user_id=user_id,
+                    app_id=app_id,
+                    exc_info=True,
+                )
+                raise HTTPException(
+                    status_code=500,
+                    detail="Token usage tracking failed",
+                )
 
     session = session_id or f"rag_{user_id}"
     new_episode = EpisodicMemory(

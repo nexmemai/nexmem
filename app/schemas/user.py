@@ -1,7 +1,23 @@
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 from typing import Optional
 from uuid import UUID
 from datetime import datetime
+
+
+PASSWORD_MIN_LENGTH = 8
+PASSWORD_MAX_LENGTH = 128
+
+
+def validate_password_complexity(password: Optional[str]) -> Optional[str]:
+    if password is None:
+        return password
+    if not any(char.isupper() for char in password):
+        raise ValueError("Password must contain at least one uppercase letter")
+    if not any(char.islower() for char in password):
+        raise ValueError("Password must contain at least one lowercase letter")
+    if not any(char.isdigit() for char in password):
+        raise ValueError("Password must contain at least one digit")
+    return password
 
 
 class UserBase(BaseModel):
@@ -10,12 +26,25 @@ class UserBase(BaseModel):
 
 
 class UserCreate(UserBase):
-    password: Optional[str] = None
+    password: Optional[str] = Field(
+        None,
+        min_length=PASSWORD_MIN_LENGTH,
+        max_length=PASSWORD_MAX_LENGTH,
+    )
+
+    @field_validator("password")
+    @classmethod
+    def password_complexity(cls, password: Optional[str]) -> Optional[str]:
+        return validate_password_complexity(password)
 
 
 class UserLogin(BaseModel):
     email: Optional[EmailStr] = None
-    password: str
+    password: str = Field(
+        ...,
+        min_length=1,
+        max_length=PASSWORD_MAX_LENGTH,
+    )
 
 
 class UserResponse(UserBase):
