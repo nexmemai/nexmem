@@ -2697,3 +2697,14 @@ export default nextConfig;
 ### 17.5 COST_OPTIMIZATION
 
 *   **Immediate Savings:** Combine the Celery Beat scheduler and Worker into a single Render service using a custom start script (`celery -A app.celery_app worker -B --loglevel=info`) or migrate the lightweight consolidation task to FastAPI's built-in `BackgroundTasks` or `APScheduler`. This reduces the Render service count from 3 (API, Worker, Beat) to 1 or 2, significantly cutting baseline hosting costs for the MVP.
+
+---
+
+### 17.6 AUTHORIZED_SIGNING_KEYS
+
+To ensure the integrity of commits and deployments, the following keys are authorized for developer machine signing:
+
+| Key Name | SHA256 Hash | Added On | Purpose |
+| :--- | :--- | :--- | :--- |
+| **Windows PC Signing Key** | `aJOT94fQJil6tiqSTwGUseLGNJpbmoKf43yCKczA9BA` | May 4, 2026 | Commit/Release Signing |
+
