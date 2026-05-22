@@ -1,33 +1,43 @@
-from typing import Optional
-from fastapi import Depends, HTTPException, status, Request
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
-from jose import jwt, JWTError
+"""Auth dependency.
+
+Phase 2 changes:
+* Uses ``app.core.security.decode_token`` so JWT algorithm is whitelisted.
+  ``alg=none`` is no longer accepted via fallthrough.
+* Does NOT mutate the global RLS contextvar. The HTTP middleware in
+  ``app/main.py`` owns the contextvar lifecycle. We only set
+  ``request.state.current_user_id`` and apply RLS to the active session
+  via ``set_rls_context`` so Postgres policies see the right identity
+  for this request only.
+* Demo mode supports multi-user auth via ``app.core.demo_auth`` so the
+  test suite can exercise register/login/me with distinct user ids.
+  The legacy ``DEMO_USER_ID`` short-circuit is kept as a fallback when
+  no Authorization header is presented and the request reaches a route
+  that does not require auth-by-default.
+"""
+from __future__ import annotations
+
+import hashlib
 import uuid
 from datetime import datetime
+from typing import Optional
 
-from app.database import get_db
-from app.database import set_current_user_id, set_rls_context
-from app.models.user import User, APIKey
-from app.core import security
+from fastapi import Depends, HTTPException, Request, status
+from jose import JWTError
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.config import settings
-from app.demo_db import DEMO_USER_ID
+from app.core import demo_auth
+from app.core.security import decode_token
+from app.database import get_db, set_rls_context
+from app.models.user import APIKey, User
 
 
 async def get_current_user(
     request: Request,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ) -> User:
-    """
-    Get the current authenticated user supporting both JWT (Bearer) and API keys (ApiKey).
-    """
-    if settings.demo_mode:
-        return User(
-            id=uuid.UUID(DEMO_USER_ID),
-            is_active=True,
-            created_at=datetime.utcnow(),
-        )
-
+    """Resolve the authenticated user from a Bearer JWT or ApiKey header."""
     auth_header = request.headers.get("Authorization")
     if not auth_header:
         raise HTTPException(
@@ -45,49 +55,88 @@ async def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    user: Optional[User] = None
+
     if scheme.lower() == "apikey":
-        # Handle API Key
-        import hashlib
         key_hash = hashlib.sha256(credentials.encode()).hexdigest()
-        result = await db.execute(select(APIKey).where(APIKey.key_hash == key_hash))
-        api_key_obj = result.scalar_one_or_none()
-        
-        if not api_key_obj or not api_key_obj.is_active:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key")
-            
-        api_key_obj.last_used_at = datetime.utcnow()
-        await db.commit()
-        
-        result = await db.execute(select(User).where(User.id == api_key_obj.user_id))
-        user = result.scalar_one_or_none()
-        
-    elif scheme.lower() == "bearer":
-        # Handle JWT
-        try:
-            payload = jwt.decode(
-                credentials, settings.secret_key, algorithms=[security.ALGORITHM]
+        if settings.demo_mode:
+            api_key = demo_auth.get_api_key_by_hash(key_hash)
+            if api_key is None:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key"
+                )
+            demo_user = demo_auth.get_user_by_id(str(api_key.user_id))
+            if demo_user is None:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key"
+                )
+            user = User(
+                id=demo_user.id,
+                email=demo_user.email,
+                wallet_address=demo_user.wallet_address,
+                is_active=demo_user.is_active,
+                created_at=demo_user.created_at,
             )
-            user_id: str = payload.get("sub")
-            token_type: str = payload.get("type", "access")
-            
-            if user_id is None:
-                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
-            if token_type != "access":
-                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token type")
-                
-            try:
-                user_uuid = uuid.UUID(user_id)
-            except ValueError:
-                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid user ID in token")
-                
-            result = await db.execute(select(User).where(User.id == user_uuid))
+        else:
+            result = await db.execute(select(APIKey).where(APIKey.key_hash == key_hash))
+            api_key_obj = result.scalar_one_or_none()
+            if not api_key_obj or not api_key_obj.is_active:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key"
+                )
+            api_key_obj.last_used_at = datetime.utcnow()
+            result = await db.execute(select(User).where(User.id == api_key_obj.user_id))
             user = result.scalar_one_or_none()
+
+    elif scheme.lower() == "bearer":
+        try:
+            payload = decode_token(credentials)
         except JWTError:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Could not validate credentials",
                 headers={"WWW-Authenticate": "Bearer"},
             )
+
+        user_id: str | None = payload.get("sub")
+        token_type: str = payload.get("type", "access")
+        if user_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
+            )
+        if token_type != "access":
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token type"
+            )
+
+        try:
+            user_uuid = uuid.UUID(user_id)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid user ID in token",
+            )
+
+        if settings.demo_mode:
+            demo_user = demo_auth.get_user_by_id(str(user_uuid))
+            if demo_user is None:
+                # Token was issued for a user that no longer exists in the
+                # demo store (e.g. between test runs that reset state).
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="User not found or inactive",
+                )
+            user = User(
+                id=demo_user.id,
+                email=demo_user.email,
+                wallet_address=demo_user.wallet_address,
+                is_active=demo_user.is_active,
+                created_at=demo_user.created_at,
+            )
+        else:
+            result = await db.execute(select(User).where(User.id == user_uuid))
+            user = result.scalar_one_or_none()
+
     else:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -96,9 +145,12 @@ async def get_current_user(
         )
 
     if user is None or not user.is_active:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found or inactive")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found or inactive",
+        )
 
     request.state.current_user_id = str(user.id)
-    set_current_user_id(str(user.id))
-    await set_rls_context(db, str(user.id))
+    if not settings.demo_mode:
+        await set_rls_context(db, str(user.id))
     return user

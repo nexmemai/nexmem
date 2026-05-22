@@ -1,9 +1,34 @@
-"""Application configuration using pydantic-settings."""
+"""Application configuration using pydantic-settings.
 
-from pydantic_settings import BaseSettings
+Phase 2 changes:
+* DATABASE_URL is no longer required when DEMO_MODE=true. The validator
+  only enforces a real URL in non-demo mode (validate_production raises
+  there). This unblocks the test suite, which runs entirely in demo
+  mode and never opens a live connection.
+* validate_production() RAISES on insecure configuration. Phase 1 only
+  logged warnings; Phase 2 makes it a hard fail so production cannot
+  start with a default SECRET_KEY, missing OPENAI_API_KEY, or wide-open
+  ALLOWED_ORIGINS.
+* New per-tier read quota settings used by app/core/quotas.py.
+"""
+
+from __future__ import annotations
+
+import logging
 from typing import List, Optional, Union
 
 from pydantic import field_validator
+from pydantic_settings import BaseSettings
+
+
+logger = logging.getLogger(__name__)
+
+
+# Used as the engine connect URL when DEMO_MODE=true and DATABASE_URL
+# is not set. The engine never opens a connection in demo mode (every
+# router branches on settings.demo_mode), but SQLAlchemy still needs a
+# syntactically valid URL to construct the engine object.
+_DEMO_URL_PLACEHOLDER = "postgresql+asyncpg://demo:demo@localhost:5432/demo"
 
 
 class Settings(BaseSettings):
@@ -13,35 +38,54 @@ class Settings(BaseSettings):
     demo_mode: bool = True
 
     # ── Database ───────────────────────────────────────────────────────────────
-    # Must be set via DATABASE_URL environment variable — no hardcoded default.
+    # Required in production (validate_production raises if missing). In
+    # demo mode it falls back to a placeholder URL that is never used.
     database_url: str = ""
 
     @field_validator("database_url", mode="before")
     @classmethod
-    def assemble_db_connection(cls, v: Optional[str]) -> str:
-        if not isinstance(v, str) or not v.strip():
-            raise ValueError(
-                "DATABASE_URL is not set. Add it to Render env vars or your .env file."
-            )
+    def normalize_db_url(cls, v: Optional[str]) -> str:
+        if v is None:
+            return ""
+        if not isinstance(v, str):
+            v = str(v)
         v = v.strip()
+        if not v:
+            return ""
         # Normalise scheme to asyncpg
         if v.startswith("postgres://"):
             v = v.replace("postgres://", "postgresql+asyncpg://", 1)
         elif v.startswith("postgresql://") and "+asyncpg" not in v:
             v = v.replace("postgresql://", "postgresql+asyncpg://", 1)
-        # asyncpg does NOT accept sslmode or ssl in the query string.
-        # SSL is handled via connect_args={"ssl": True} in database.py.
+        # asyncpg does NOT accept sslmode/ssl in the query string.
+        # SSL is handled via connect_args in app/database.py.
         import re
         v = re.sub(r"[?&]ssl(?:mode)?=[^&]*", "", v)
-        # Clean up any leftover trailing ? or &
         v = v.rstrip("?&")
         return v
+
+    @property
+    def effective_database_url(self) -> str:
+        """Return the URL the engine should bind to.
+
+        In demo mode, returns a placeholder if the real URL is not set.
+        In non-demo mode, returns the real URL (validate_production has
+        already verified it is set).
+        """
+        if self.database_url:
+            return self.database_url
+        if self.demo_mode:
+            return _DEMO_URL_PLACEHOLDER
+        # In production we never reach here because validate_production
+        # has raised already, but be defensive.
+        return _DEMO_URL_PLACEHOLDER
 
     # ── Auth ───────────────────────────────────────────────────────────────────
     # IMPORTANT: Set a strong random value in Render env vars.
     # Generate one with: python -c "import secrets; print(secrets.token_hex(32))"
     secret_key: str = "local-dev-secret-change-this-before-production"
     access_token_expire_hours: int = 4
+    refresh_token_expire_days: int = 7
 
     # ── OpenAI ─────────────────────────────────────────────────────────────────
     openai_api_key: str = "sk-placeholder"
@@ -63,10 +107,11 @@ class Settings(BaseSettings):
 
     # ── Observability ──────────────────────────────────────────────────────────
     sentry_dsn: Optional[str] = None
+    sentry_traces_sample_rate: float = 0.1
+    sentry_profiles_sample_rate: float = 0.0
     # Set METRICS_SECRET_KEY in Render to enable the /metrics endpoint.
-    # Use: Authorization: Bearer <METRICS_SECRET_KEY>
     metrics_secret_key: Optional[str] = None
-    
+
     # ── CORS ───────────────────────────────────────────────────────────────────
     allowed_origins: Union[str, List[str]] = ["*"]
 
@@ -80,8 +125,6 @@ class Settings(BaseSettings):
             v = v.strip()
             if not v:
                 return ["*"]
-            
-            # Try parsing as JSON first (to handle ["a", "b"] format)
             if v.startswith("[") and v.endswith("]"):
                 try:
                     import json
@@ -89,63 +132,89 @@ class Settings(BaseSettings):
                     if isinstance(parsed, list):
                         return parsed
                 except Exception:
-                    pass # Fallback to manual cleaning
-
-            # Manual cleaning: remove brackets and quotes
+                    pass
             v = v.replace("[", "").replace("]", "").replace("\"", "").replace("'", "")
-            
-            # Handle comma-separated: "https://a.com, https://b.com"
             return [origin.strip() for origin in v.split(",") if origin.strip()]
         return v
 
     # ── Frontend ───────────────────────────────────────────────────────────────
     frontend_api_url: str = "http://localhost:8000"
 
-    # ── Redis (for rate limiting and quotas) ───────────────────
+    # ── Redis (rate limiting, quotas, brute-force) ─────────────────────────────
     redis_url: Optional[str] = None
 
-    # ── User Tiers (quotas) ───────────────────────────────
+    # ── Write quotas per tier ──────────────────────────────────────────────────
     free_monthly_writes: int = 1000
     starter_monthly_writes: int = 10000
     pro_monthly_writes: int = 100000
     enterprise_monthly_writes: int = 1000000
 
+    # ── Read quotas per tier (Phase 2) ─────────────────────────────────────────
+    free_monthly_reads: int = 10000
+    starter_monthly_reads: int = 100000
+    pro_monthly_reads: int = 1000000
+    enterprise_monthly_reads: int = 10000000
+
     def validate_production(self) -> None:
-        """Strict validation for production mode — raises on insecure config."""
+        """Strict validation for production mode — RAISES on insecure config.
+
+        Called from the FastAPI lifespan (app.main.lifespan) so any
+        misconfiguration kills the process at startup instead of silently
+        running with insecure defaults.
+        """
         if self.demo_mode:
             return
 
-        errors = []
+        errors: list[str] = []
+        warnings: list[str] = []
+
+        if not self.database_url:
+            errors.append(
+                "DATABASE_URL is required in non-demo mode. Set it in your "
+                "deploy environment (Render Dashboard, etc.) before starting."
+            )
 
         if (
             self.secret_key.startswith("local-dev")
-            or self.secret_key == "changeme_in_production"
+            or self.secret_key in ("changeme_in_production", "ci-test-secret")
             or len(self.secret_key) < 32
         ):
-            import logging
-            logging.getLogger(__name__).warning(
-                "SECRET_KEY is too weak or is the default value. "
-                "Please generate a strong one with: python -c \"import secrets; print(secrets.token_hex(32))\""
+            errors.append(
+                "SECRET_KEY is missing, default, or shorter than 32 characters. "
+                "Generate one with: python -c 'import secrets; print(secrets.token_hex(32))'"
             )
 
-        if not self.openai_api_key or self.openai_api_key == "sk-placeholder":
-            import logging
-            logging.getLogger(__name__).warning(
-                "OPENAI_API_KEY is missing or placeholder — AI summarisation features disabled."
+        if not self.openai_api_key or self.openai_api_key in ("sk-placeholder", "sk-test-placeholder"):
+            warnings.append(
+                "OPENAI_API_KEY is missing or a placeholder; AI summarisation "
+                "and RAG features will degrade to safe fallbacks."
             )
 
-        if self.allowed_origins == ["*"]:
-            import logging
-            logging.getLogger(__name__).warning(
-                "ALLOWED_ORIGINS is '*' which allows any origin. "
-                "Set it to your frontend domain(s) in Render env vars."
+        if list(self.allowed_origins) == ["*"]:
+            errors.append(
+                "ALLOWED_ORIGINS is '*' which permits any origin. Set it to "
+                "the explicit list of allowed frontend domains."
             )
 
-        # Removed the RuntimeError raise to prevent startup hangs.
-        pass
+        if not self.redis_url:
+            warnings.append(
+                "REDIS_URL is unset. Rate limiting, brute-force protection, "
+                "and quotas will degrade to in-memory and fail closed on a "
+                "per-process basis. This is unsafe for multi-replica deployments."
+            )
+
+        for warning in warnings:
+            logger.warning("config: %s", warning)
+
+        if errors:
+            for err in errors:
+                logger.error("config: %s", err)
+            raise RuntimeError(
+                "Refusing to start in non-demo mode with insecure configuration: "
+                + " | ".join(errors)
+            )
 
     class Config:
-        # Reads .env first, then .env.local for local overrides
         env_file = [".env", ".env.local"]
         env_file_encoding = "utf-8"
         extra = "ignore"
