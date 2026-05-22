@@ -53,6 +53,37 @@ async def _probe_redis() -> str:
         return f"error: {exc}"
 
 
+async def _probe_celery() -> str:
+    """Inspect the Celery broker for a live worker (P8-F7).
+
+    Reports ``skipped`` in demo mode (no broker) and when Redis is
+    unconfigured. Reports ``error: ...`` if the broker is reachable
+    but ``inspect().ping()`` returns no responses — that is the
+    "queue is up but no worker is alive" mode that previously
+    sailed through readiness checks.
+    """
+    if settings.demo_mode:
+        return "skipped: demo mode"
+    if not settings.redis_url:
+        return "skipped: REDIS_URL not configured"
+    try:
+        from app.celery_app import celery_app
+
+        # ``inspect().ping()`` returns a dict {worker_name: 'pong'}
+        # when at least one worker is connected; ``None`` otherwise.
+        # The call blocks for the broker timeout, so we run it in a
+        # thread with our own ceiling.
+        def _ping():
+            return celery_app.control.inspect(timeout=2).ping()
+
+        result = await asyncio.wait_for(asyncio.to_thread(_ping), timeout=3)
+        if not result:
+            return "error: no Celery workers responded to ping"
+        return "ok"
+    except Exception as exc:  # noqa: BLE001
+        return f"error: {exc}"
+
+
 async def _probe_database(db: AsyncSession) -> tuple[str, float]:
     """Round-trip SELECT 1 against the DB. Returns (status, latency_ms)."""
     if settings.demo_mode:
@@ -75,6 +106,8 @@ async def readiness(db: AsyncSession = Depends(get_db)):
     checks["database_latency_ms"] = round(db_latency_ms, 1)
 
     checks["redis"] = await _probe_redis()
+    # P8-F7: a stuck or absent Celery worker should not pass readiness.
+    checks["celery"] = await _probe_celery()
 
     embedding_status = "ok"
     if settings.openai_api_key and settings.openai_api_key not in (
