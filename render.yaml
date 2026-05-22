@@ -32,6 +32,8 @@ services:
         sync: false
       - key: CONSOLIDATION_INTERVAL_MINUTES
         value: "30"
+      - key: WARM_MODELS_AT_STARTUP
+        value: "true"
       - key: PYTHON_VERSION
         value: "3.11.9"
 

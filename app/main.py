@@ -91,6 +91,20 @@ async def lifespan(app: FastAPI):
 
         asyncio.create_task(_background_rebuild())
 
+        # Optionally pre-warm heavy ML models off the request path (P2-C7).
+        if settings.warm_models_at_startup:
+            from app.services.embedder import embedder as _embedder
+            from app.services.engram_processor import engram_processor as _engp
+
+            async def _warm():
+                try:
+                    await _embedder.warmup()
+                    await _engp.warmup()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("model warmup failed: %s", exc)
+
+            asyncio.create_task(_warm())
+
         try:
             # Verify vector dimension matches expected 384D
             from sqlalchemy import text

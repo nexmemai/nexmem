@@ -390,12 +390,24 @@ def decay_score(created_at: datetime, half_life_days: float = 30.0) -> float:
 
 
 class LazyEngramProcessor:
-    """Create the heavy NLP models only when memory processing is first used."""
+    """Create the heavy NLP models only when memory processing is first used.
+
+    Cold-start behaviour (R-M2/M3, P2-C7):
+      - First call to process_async() loads spaCy + sentence-transformers.
+      - Loading is single-flighted by an asyncio.Lock and the actual
+        constructor runs in a worker thread so the event loop is not
+        pinned for the (potentially multi-second) load.
+      - First-load duration is logged so operators can correlate
+        cold-start latency with model loading.
+      - Operators can pre-warm at startup via warmup(); app.main calls
+        this when settings.warm_models_at_startup is true.
+    """
 
     def __init__(self):
         self._instance: Optional[EngramProcessor] = None
         self._lock: Optional[asyncio.Lock] = None
         self._preloaded_contexts: Dict[str, Dict] = {}
+        self._first_load_logged: bool = False
 
     def _get_lock(self) -> asyncio.Lock:
         if self._lock is None:
@@ -403,12 +415,35 @@ class LazyEngramProcessor:
         return self._lock
 
     async def _get(self) -> EngramProcessor:
-        if self._instance is None:
-            lock = self._get_lock()
-            async with lock:
-                if self._instance is None:
-                    self._instance = EngramProcessor(self._preloaded_contexts)
+        if self._instance is not None:
+            return self._instance
+        lock = self._get_lock()
+        async with lock:
+            if self._instance is None:
+                import logging
+                import time
+
+                t0 = time.perf_counter()
+                loop = asyncio.get_event_loop()
+                # Run the heavy ctor in a worker thread to avoid blocking
+                # the event loop for the entire load (~1-3s on warm caches,
+                # 10-30s on cold).
+                self._instance = await loop.run_in_executor(
+                    None,
+                    lambda: EngramProcessor(self._preloaded_contexts),
+                )
+                if not self._first_load_logged:
+                    elapsed_ms = (time.perf_counter() - t0) * 1000
+                    logging.getLogger(__name__).info(
+                        "engram_processor.warmup_complete elapsed_ms=%.2f",
+                        elapsed_ms,
+                    )
+                    self._first_load_logged = True
         return self._instance
+
+    async def warmup(self) -> None:
+        """Eagerly load spaCy + sentence-transformers. Idempotent."""
+        await self._get()
 
     async def process_async(self, text: str, user_id: str) -> Dict[str, Any]:
         processor = await self._get()

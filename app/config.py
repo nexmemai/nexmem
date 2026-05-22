@@ -126,6 +126,14 @@ class Settings(BaseSettings):
     pro_monthly_writes: int = 100000
     enterprise_monthly_writes: int = 1000000
 
+    # ── Cold-start behaviour (P2-C7) ──────────────────────────────
+    # When true, the lifespan eagerly loads the embedder + engram
+    # processor models in the background at startup. The web replica
+    # binds the port immediately; warmup happens off the request path.
+    # Recommended for production. Off by default so dev / tests do
+    # not download models on every server boot.
+    warm_models_at_startup: bool = False
+
     # ── Helpers ────────────────────────────────────────────────────────────────
     @property
     def is_production(self) -> bool:
