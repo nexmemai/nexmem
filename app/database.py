@@ -40,11 +40,16 @@ def _build_engine_kwargs() -> dict:
     In demo mode the engine is never used to open a connection, but the
     placeholder URL points at localhost. We disable pre-ping and SSL so
     importing the module does not attempt any network I/O.
+
+    Phase 5 (P5-C1): every non-demo connection sets
+    ``statement_timeout`` and ``idle_in_transaction_session_timeout``
+    via asyncpg's ``server_settings`` so a runaway query cannot pin a
+    pooler connection forever.
     """
     common = dict(
         echo=settings.debug,
-        pool_size=5,
-        max_overflow=5,
+        pool_size=settings.db_pool_size,
+        max_overflow=settings.db_max_overflow,
         pool_timeout=30,
         pool_pre_ping=not settings.demo_mode,
     )
@@ -55,6 +60,22 @@ def _build_engine_kwargs() -> dict:
     }
     if not settings.demo_mode:
         connect_args["ssl"] = "require"
+        # P5-C1: kill any statement that runs longer than the configured
+        # timeout (30s default), and any transaction that goes idle for
+        # longer than ``idle_in_transaction_session_timeout`` (60s default).
+        # asyncpg accepts these via ``server_settings`` and applies them
+        # on every new connection. Values are stringified milliseconds —
+        # PostgreSQL parses them as ``<n>ms``.
+        connect_args["server_settings"] = {
+            "statement_timeout": f"{settings.db_statement_timeout_ms}ms",
+            "idle_in_transaction_session_timeout": (
+                f"{settings.db_idle_in_transaction_timeout_ms}ms"
+            ),
+            # ``application_name`` makes pg_stat_activity readable so the
+            # operator can identify which service holds a long-running
+            # query during an incident.
+            "application_name": f"nexmem-{settings.environment}",
+        }
     common["connect_args"] = connect_args
     return common
 
