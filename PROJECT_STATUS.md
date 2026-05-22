@@ -1,6 +1,6 @@
 # Nexmem Project Status
 
-**Last reviewed:** 2026-05-22 (end of Phase 2 hardening).
+**Last reviewed:** 2026-05-22 (end of Phase 3 — auth & session hardening).
 **Stage:** pre-private-beta. Has not yet served real user traffic.
 
 This document is the source of truth for what is actually shipped vs
@@ -74,6 +74,26 @@ authenticated identity. See `docs/APP_SCOPING.md` for the rule and
 * Brute-force lockout on login: 5 failures within 10 minutes locks
   the email and IP for 15 minutes. Uses Redis when available,
   in-memory otherwise (single-worker only — see R-107).
+* **Phase 3 (post-Phase 2):**
+  * Email verification on registration. `/auth/verify-email/confirm`
+    consumes a single-use 24-hour token and stamps
+    `users.email_verified_at`. Login refuses to mint tokens for an
+    unverified email user when `EMAIL_VERIFICATION_REQUIRED=true`
+    (operator opt-in, defaults to `false`). Resend endpoint returns
+    a generic 202 to avoid account enumeration. (P3-A1.)
+  * Password reset flow. `/auth/password-reset/request` issues a
+    single-use 30-minute token; `/auth/password-reset/confirm`
+    rotates the password and revokes every active refresh token.
+    Always returns 202 on request to avoid leaking which addresses
+    are registered. (P3-A2.)
+  * Authenticated `/auth/change-password` requires the current
+    password and revokes all refresh tokens on success. (P3-A3.)
+  * `GET /auth/sessions` lists active refresh tokens with their
+    user_agent, ip, issued/expires timestamps. `DELETE
+    /auth/sessions/{id}` revokes a single session. (P3-A4.)
+  * Per-IP rate limit on `/auth/register` (default `5/hour`)
+    enforced via slowapi. Demo mode is exempted so tests run
+    without throttling. (P3-A8.)
 
 ### 3.2 Memory writes
 Five tables: `episodic_memory`, `semantic_memory`,
