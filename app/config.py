@@ -87,6 +87,17 @@ class Settings(BaseSettings):
     access_token_expire_hours: int = 4
     refresh_token_expire_days: int = 7
 
+    # ── Phase 3: email verification + password reset (P3-A1, P3-A2) ────────────
+    # Operator opt-in. Default False keeps backwards-compatible behaviour
+    # for the existing test suite and tiny private beta. The acceptance
+    # criteria in BACKEND_HARDENING_PHASE3_PLUS.md require this to be
+    # ``true`` before billing / public beta.
+    email_verification_required: bool = False
+    email_verification_token_ttl_hours: int = 24
+    password_reset_token_ttl_minutes: int = 30
+    # P3-A8: per-IP rate limit on /auth/register. ``slowapi`` syntax.
+    register_rate_limit: str = "5/hour"
+
     # ── OpenAI ─────────────────────────────────────────────────────────────────
     openai_api_key: str = "sk-placeholder"
     openai_llm_model: str = "gpt-4o"
