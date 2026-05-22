@@ -104,55 +104,8 @@ def test_render_yaml_does_not_pin_supabase_project() -> None:
     assert "pooler.supabase.com" not in render_yaml
 
 
-# ── Repo-wide secret guard ───────────────────────────────────────────────────
-# These directories and file types are scanned. Test/audit/risk/plan files are
-# excluded because they intentionally contain the literal as part of the
-# guard tests themselves.
-
-_FORBIDDEN_LITERALS = (
-    "Doesitmatter",
-    "***REDACTED_PROJECT_ID***",
-)
-_SCAN_SUFFIXES = {
-    ".py",
-    ".yaml",
-    ".yml",
-    ".sql",
-    ".toml",
-    ".json",
-    ".env",
-    ".ini",
-    ".sh",
-}
-_EXCLUDED_PATHS = {
-    "tests/test_alembic_env.py",
-    "REPO_STATE_AUDIT.md",
-    "BACKEND_RISKS.md",
-    "BACKEND_HARDENING_PLAN.md",
-}
-_EXCLUDED_PARTS = (".git", "node_modules", ".venv", "__pycache__")
-
-
-def test_no_supabase_password_or_project_in_repo_source() -> None:
-    """No source file (excluding audit/test docs) may contain the leaked password
-    or the Supabase project ref. Catches future regressions across the whole repo.
-    """
-    leaks: list[tuple[str, str]] = []
-    for path in REPO_ROOT.rglob("*"):
-        if not path.is_file():
-            continue
-        rel = path.relative_to(REPO_ROOT).as_posix()
-        if rel in _EXCLUDED_PATHS:
-            continue
-        if any(part in rel.split("/") for part in _EXCLUDED_PARTS):
-            continue
-        if path.suffix not in _SCAN_SUFFIXES:
-            continue
-        try:
-            text = path.read_text(errors="ignore")
-        except OSError:
-            continue
-        for literal in _FORBIDDEN_LITERALS:
-            if literal in text:
-                leaks.append((rel, literal))
-    assert not leaks, f"hardcoded credentials found in source: {leaks}"
+# Note: the whole-repo regression scan that used to live here was superseded
+# by `tests/test_scan_secrets.py::test_repo_is_clean`, which uses the
+# pattern catalogue in `scripts/scan_secrets.py` and a proper exclusion
+# list (the runbook + scanner files reference the historical literal on
+# purpose and were tripping the old narrow check).

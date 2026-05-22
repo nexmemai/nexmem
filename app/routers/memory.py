@@ -2,7 +2,7 @@
 
 from typing import Optional, List, Dict, Any
 import asyncio
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, text
@@ -292,21 +292,28 @@ async def write_episode(
     current_user: User = Depends(enforce_write_quota),
     db: AsyncSession = Depends(get_db),
 ):
-    """
-    Unified write endpoint that:
-    1. Saves to episodic table
-    2. Generates embedding -> semantic table
-    3. Runs engram processor -> engrams table
-    4. Extracts entities -> graph table
-    Returns summary of what was stored.
+    """Unified write endpoint.
+
+    Atomicity contract:
+        Either all of {episodic, semantic, engram, graph nodes, graph edges}
+        are persisted, or none of them are. The DB writes happen inside a
+        single transaction managed by `get_db`. Any failure in the DB phase
+        propagates as an HTTPException(500) and `get_db` rolls back.
+
+    Failures BEFORE the DB phase (embedding service, NLP/engram processor,
+    or LLM I/O) raise an HTTPException(502/503) without touching the DB
+    at all.
+
+    The previous version swallowed semantic-insert and engram-insert errors,
+    which left the episodic row committed with no semantic/engram peer.
+    R-H1 (BACKEND_RISKS.md) tracks the regression.
     """
     user_id = str(current_user.id)
-    
-    # Demo mode: use in-memory storage
-    if settings.demo_mode:
-        from app.demo_db import create_episodic, create_semantic, DEMO_USER_ID
 
-        # Create episodic record
+    # Demo mode: use in-memory storage (atomicity not required — all dict ops).
+    if settings.demo_mode:
+        from app.demo_db import create_episodic, create_semantic
+
         episodic_result = create_episodic(
             user_id=user_id,
             session_id=body.session_id,
@@ -316,11 +323,9 @@ async def write_episode(
         )
         episodic_id = episodic_result.get("id")
 
-        # Generate embedding using global embedder instance
-        from app.services.embedder import embedder
-        embedding = await embedder.embed(body.content)
+        from app.services.embedder import embedder as _embedder
+        embedding = await _embedder.embed(body.content)
 
-        # Create semantic record
         semantic_result = create_semantic(
             user_id=user_id,
             episodic_id=episodic_id,
@@ -331,12 +336,11 @@ async def write_episode(
         )
         semantic_id = semantic_result.get("id")
 
-        # Process with engram processor (optional, can be slow)
         try:
             engram = await engram_processor.process_async(body.content, user_id)
             engram_id = engram.get("engram_id")
         except Exception as e:
-            logger.warning(f"Engram processing failed: {e}")
+            logger.warning("engram processing failed in demo mode: %s", e)
             engram_id = None
 
         return EpisodeWriteResponse(
@@ -348,19 +352,49 @@ async def write_episode(
             message="Episode stored successfully (demo mode)",
         )
 
-    # Production mode: use database
-    episodic_id = None
-    semantic_id = None
-    engram_id = None
+    # ── Production path ────────────────────────────────────────────────────
+    # Step 1: pre-compute embedding (no DB state).
+    try:
+        embedding = await embedder.embed(body.content)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("episode_write.embedding_failed", extra={"err": str(exc), "user_id": user_id})
+        raise HTTPException(
+            status_code=502,
+            detail="Embedding service failed. Episode not stored; please retry.",
+        )
+
+    # Step 2: pre-compute engram (no DB state).
+    try:
+        engram = await engram_processor.process_async(body.content, user_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("episode_write.engram_failed", extra={"err": str(exc), "user_id": user_id})
+        raise HTTPException(
+            status_code=503,
+            detail="Engram processing failed. Episode not stored; please retry.",
+        )
+
+    engram_id = engram.get("engram_id")
+    embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
+    dense_embedding = engram.get("dense_embedding") or []
+    engram_emb_str = (
+        "[" + ",".join(str(x) for x in dense_embedding) + "]"
+        if dense_embedding
+        else None
+    )
+
+    # Step 3: persist everything in a single transaction. Any failure here
+    # propagates and `get_db` rolls back the entire write.
     nodes_created = 0
     edges_created = 0
 
+    # Episodic row.
     result = await db.execute(
-        text("""
-            INSERT INTO episodic_memory (user_id, session_id, content, metadata, tags, app_id)
-            VALUES (:uid, :session, :content, :meta, :tags, :app_id)
-            RETURNING id
-        """),
+        text(
+            "INSERT INTO episodic_memory "
+            "(user_id, session_id, content, metadata, tags, app_id) "
+            "VALUES (:uid, :session, :content, :meta, :tags, :app_id) "
+            "RETURNING id"
+        ),
         {
             "uid": user_id,
             "session": body.session_id,
@@ -368,73 +402,62 @@ async def write_episode(
             "meta": body.metadata,
             "tags": body.tags,
             "app_id": body.app_id,
-        }
+        },
     )
     row = result.fetchone()
     episodic_id = str(row[0]) if row else None
 
-    try:
-        embedding = await embedder.embed(body.content)
-        embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
-        result = await db.execute(
-            text("""
-                INSERT INTO semantic_memory (user_id, episodic_id, vector, content_preview, metadata, app_id)
-                VALUES (:uid, :epi_id, CAST(:vec AS vector), :preview, :meta, :app_id)
-                RETURNING id
-            """),
-            {
-                "uid": user_id,
-                "epi_id": episodic_id,
-                "vec": embedding_str,
-                "preview": body.content[:200],
-                "meta": body.metadata,
-                "app_id": body.app_id,
-            }
-        )
-        row = result.fetchone()
-        semantic_id = str(row[0]) if row else None
-    except Exception as exc:
-        logger.warning("Semantic memory write failed for episode %s: %s", episodic_id, exc)
+    # Semantic row (linked to episodic).
+    result = await db.execute(
+        text(
+            "INSERT INTO semantic_memory "
+            "(user_id, episodic_id, vector, content_preview, metadata, app_id) "
+            "VALUES (:uid, :epi_id, CAST(:vec AS vector), :preview, :meta, :app_id) "
+            "RETURNING id"
+        ),
+        {
+            "uid": user_id,
+            "epi_id": episodic_id,
+            "vec": embedding_str,
+            "preview": body.content[:200],
+            "meta": body.metadata,
+            "app_id": body.app_id,
+        },
+    )
+    row = result.fetchone()
+    semantic_id = str(row[0]) if row else None
 
-    engram = await engram_processor.process_async(body.content, user_id)
-    engram_id = engram.get("engram_id")
+    # Engram row.
+    await db.execute(
+        text(
+            "INSERT INTO engrams "
+            "(user_id, engram_id, distilled_text, dense_embedding, "
+            " actions, objects, entities, negated_actions, "
+            " salience_scores, connections, original_length, "
+            " compressed_length, compression_ratio, source_type) "
+            "VALUES (:uid, :eid, :text, "
+            " CASE WHEN :emb IS NULL THEN NULL ELSE CAST(:emb AS vector) END, "
+            " :actions, :objects, :entities, :neg_actions, :salience, :conn, "
+            " :orig_len, :comp_len, :ratio, 'episodic')"
+        ),
+        {
+            "uid": user_id,
+            "eid": engram_id,
+            "text": engram.get("distilled_text", ""),
+            "emb": engram_emb_str,
+            "actions": engram.get("actions", []),
+            "objects": engram.get("objects", []),
+            "entities": engram.get("entities", []),
+            "neg_actions": engram.get("negated_actions", []),
+            "salience": engram.get("salience_scores", {}),
+            "conn": engram.get("connections", []),
+            "orig_len": engram.get("original_length", 0),
+            "comp_len": engram.get("compressed_length", 0),
+            "ratio": engram.get("compression_ratio", 0.0),
+        },
+    )
 
-    try:
-        dense_embedding = engram.get("dense_embedding", [])
-        if dense_embedding:
-            embedding_str = "[" + ",".join(str(x) for x in dense_embedding) + "]"
-        else:
-            embedding_str = None
-
-        result = await db.execute(
-            text("""
-                INSERT INTO engrams (user_id, engram_id, distilled_text, dense_embedding,
-                                     actions, objects, entities, negated_actions,
-                                     salience_scores, connections, original_length,
-                                     compressed_length, compression_ratio, source_type)
-                VALUES (:uid, :eid, :text, CAST(:emb AS vector), :actions, :objects, :entities,
-                        :neg_actions, :salience, :conn, :orig_len, :comp_len, :ratio, 'episodic')
-                RETURNING id
-            """),
-            {
-                "uid": user_id,
-                "eid": engram_id,
-                "text": engram.get("distilled_text", ""),
-                "emb": embedding_str,
-                "actions": engram.get("actions", []),
-                "objects": engram.get("objects", []),
-                "entities": engram.get("entities", []),
-                "neg_actions": engram.get("negated_actions", []),
-                "salience": engram.get("salience_scores", {}),
-                "conn": engram.get("connections", []),
-                "orig_len": engram.get("original_length", 0),
-                "comp_len": engram.get("compressed_length", 0),
-                "ratio": engram.get("compression_ratio", 0.0),
-            }
-        )
-    except Exception as exc:
-        logger.warning("Engram persistence failed for episode %s: %s", episodic_id, exc)
-
+    # Graph nodes / edges.
     node_ids: Dict[tuple[str, str], str] = {}
     for graph_edge in engram.get("graph_edges", []):
         for label_key, type_key in (
@@ -445,11 +468,9 @@ async def write_episode(
             node_type = graph_edge.get(type_key)
             if not label or not node_type:
                 continue
-
             key = (label, node_type)
             if key in node_ids:
                 continue
-
             node_id, was_created = await get_or_create_knowledge_node(
                 db, user_id, label, node_type, engram_id, body.app_id
             )
@@ -464,7 +485,6 @@ async def write_episode(
         target_id = node_ids.get(target_key)
         if not source_id or not target_id or source_id == target_id:
             continue
-
         await persist_edge(
             db,
             source_id=source_id,
