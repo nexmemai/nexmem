@@ -31,7 +31,7 @@ async def test_migrations_reach_head() -> None:
     assert version is not None
     # 011 is the current head as of this hardening pass.
     # If a future migration lands, this assertion is a reminder to update it.
-    assert version == "011_fk_cascade_content_limits", (
+    assert version == "013_rls_users_apikeys_tokenusage", (
         f"Unexpected alembic head: {version}. Update this test to match the "
         f"new HEAD revision when adding a migration."
     )
