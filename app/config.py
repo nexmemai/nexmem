@@ -213,6 +213,33 @@ class Settings(BaseSettings):
     # mutates settings in-place).
     read_only: bool = False
 
+    # ── Circuit breaker (P6-D7) ────────────────────────────────────────────────
+    # Trips after N consecutive failures in W seconds and stays open
+    # for C seconds. Wraps every OpenAI call from RAG + consolidation
+    # so a global OpenAI outage cannot saturate the workers with
+    # tenacity-retry storms.
+    circuit_openai_failure_threshold: int = 5
+    circuit_openai_cooldown_seconds: int = 60
+    circuit_openai_failure_window_seconds: int = 60
+
+    # ── Account lockout escalation (P3-A7) ─────────────────────────────────────
+    # Beyond the per-(email, IP) lockout in app/core/brute_force.py,
+    # escalate when a SINGLE user accumulates many failures across
+    # many IPs in a window — that pattern points at distributed
+    # credential stuffing rather than a forgetful user. The default
+    # is conservative; tighten for paid tiers.
+    account_lockout_escalation_threshold: int = 50
+    account_lockout_escalation_window_seconds: int = 3600
+    account_lockout_escalation_seconds: int = 86400  # 24 h
+
+    # ── JSON request shape guards (P7-E6) ──────────────────────────────────────
+    # Bound nested-object depth and total node count so a deeply
+    # nested or massively wide JSON body cannot pin pydantic / json
+    # parsing on a single request. The body cap (P7-E5) bounds the
+    # raw bytes; this bounds CPU.
+    max_request_json_depth: int = 32
+    max_request_json_nodes: int = 10_000
+
     # ── Write quotas per tier ──────────────────────────────────────────────────
     free_monthly_writes: int = 1000
     starter_monthly_writes: int = 10000

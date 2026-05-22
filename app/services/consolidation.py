@@ -130,11 +130,26 @@ async def summarize_with_llm(
             max_tokens=300,
         )
 
+    # P6-D7: same circuit breaker as the RAG path. If the circuit
+    # is OPEN we fall straight back to truncated raw content; the
+    # exception is intentionally swallowed by the existing
+    # ``except Exception`` block below.
+    from app.core.circuit_breaker import CircuitOpenError, get_breaker
+
+    breaker = get_breaker("openai")
     try:
+        breaker.guard()
         response = await asyncio.to_thread(_call_llm)
+        breaker.record_success()
         summary = response.choices[0].message.content.strip()
         return summary[:max_length] if len(summary) > max_length else summary
+    except CircuitOpenError:
+        logger.warning(
+            "consolidation: openai circuit OPEN; using raw content fallback"
+        )
+        return content[:max_length]
     except Exception as exc:
+        breaker.record_failure()
         logger.warning(
             "consolidation: LLM summary failed after retries (%s); using raw content",
             exc,

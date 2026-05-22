@@ -74,6 +74,7 @@ def reset_demo_stores():
     demo_db.reset_demo_auth()
     _audit_log_module.reset_demo_audit_log()
     _brute_force_module._store.clear()
+    _brute_force_module._reset_account_escalation()
     try:
         _slowapi_limiter.reset()
     except Exception:
@@ -87,6 +88,7 @@ def reset_demo_stores():
     demo_db.reset_demo_auth()
     _audit_log_module.reset_demo_audit_log()
     _brute_force_module._store.clear()
+    _brute_force_module._reset_account_escalation()
     try:
         _slowapi_limiter.reset()
     except Exception:
