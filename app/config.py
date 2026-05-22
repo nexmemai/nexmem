@@ -175,7 +175,7 @@ class Settings(BaseSettings):
     db_pool_size: int = 5
     db_max_overflow: int = 5
 
-    # ── Celery hardening (P6-D2 / D3 / D4) ─────────────────────────────────────
+    # ── Celery hardening (P6-D1 / D2 / D3 / D4 / D5) ───────────────────────────
     # ``celery_task_soft_time_limit`` raises ``SoftTimeLimitExceeded`` inside
     #   the task so the task can clean up. ``celery_task_time_limit`` is the
     #   hard kill. Mismatched (soft < hard) is required.
@@ -186,6 +186,16 @@ class Settings(BaseSettings):
     celery_task_time_limit_seconds: int = 300
     celery_worker_max_tasks_per_child: int = 100
     celery_result_expires_seconds: int = 3_600
+    # P6-D5: idempotency lock TTL = task_time_limit + buffer so a hung
+    # task that the broker hard-kills cannot leave a stale lock pinning
+    # the next legitimate enqueue. Buffer is generous (60s) so we err
+    # on the side of refusing duplicates rather than running them.
+    consolidation_lock_ttl_seconds: int = 360
+    # P6-D1: dead-letter queue. Failed-permanently tasks LPUSH onto
+    # this Redis list. ``dlq_max_entries`` trims so the list cannot
+    # exhaust Redis memory under a stuck-task storm.
+    dlq_redis_key: str = "nexmem:dlq:consolidation"
+    dlq_max_entries: int = 1_000
 
     # ── Request body cap (P7-E5) ───────────────────────────────────────────────
     # Anything above this is 413 Payload Too Large. Starlette/FastAPI
