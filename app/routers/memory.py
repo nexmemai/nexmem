@@ -431,17 +431,18 @@ async def write_episode(
     await db.execute(
         text(
             "INSERT INTO engrams "
-            "(user_id, engram_id, distilled_text, dense_embedding, "
+            "(user_id, app_id, engram_id, distilled_text, dense_embedding, "
             " actions, objects, entities, negated_actions, "
             " salience_scores, connections, original_length, "
             " compressed_length, compression_ratio, source_type) "
-            "VALUES (:uid, :eid, :text, "
+            "VALUES (:uid, :app_id, :eid, :text, "
             " CASE WHEN :emb IS NULL THEN NULL ELSE CAST(:emb AS vector) END, "
             " :actions, :objects, :entities, :neg_actions, :salience, :conn, "
             " :orig_len, :comp_len, :ratio, 'episodic')"
         ),
         {
             "uid": user_id,
+            "app_id": body.app_id,
             "eid": engram_id,
             "text": engram.get("distilled_text", ""),
             "emb": engram_emb_str,
@@ -516,11 +517,16 @@ async def get_engram(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get a specific engram by ID."""
-    sql_text = "SELECT * FROM engrams WHERE user_id = :uid AND engram_id = :eid"
-    params = {"uid": str(current_user.id), "eid": engram_id}
+    """Get a specific engram by ID.
 
-    # Filter by app_id if provided
+    Always scoped by `user_id`. When `app_id` is provided, additionally
+    requires the engram's `app_id` column to match (so two apps owned by
+    the same user cannot see each other's engrams when app_id is sent).
+    R-H5.
+    """
+    sql_text = "SELECT * FROM engrams WHERE user_id = :uid AND engram_id = :eid"
+    params: Dict[str, Any] = {"uid": str(current_user.id), "eid": engram_id}
+
     if app_id:
         sql_text += " AND app_id = :app_id"
         params["app_id"] = app_id

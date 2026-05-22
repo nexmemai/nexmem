@@ -23,6 +23,12 @@ class Engram(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), nullable=False, index=True
     )
+    # app_id is nullable; NULL means "user-scoped, no app". Multi-app
+    # tenants use this column to isolate engram contexts. Added in
+    # migration 012_add_app_id_to_engrams (R-H5).
+    app_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), nullable=True, index=True
+    )
     engram_id: Mapped[str] = mapped_column(
         String(12), nullable=False, index=True
     )
