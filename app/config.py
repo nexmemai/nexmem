@@ -194,6 +194,15 @@ class Settings(BaseSettings):
     # ceiling for a memory-write payload.
     max_request_body_bytes: int = 5 * 1024 * 1024
 
+    # ── Read-only kill switch (P9-G1) ──────────────────────────────────────────
+    # When True, every state-changing HTTP route returns 503. Reads,
+    # health/metrics, and session-revocation endpoints continue to
+    # flow. Defaults to False; operator flips this via the
+    # ``READ_ONLY`` env var during an incident, then restarts the
+    # process (or hits a future ``/admin/read-only`` endpoint that
+    # mutates settings in-place).
+    read_only: bool = False
+
     # ── Write quotas per tier ──────────────────────────────────────────────────
     free_monthly_writes: int = 1000
     starter_monthly_writes: int = 10000
