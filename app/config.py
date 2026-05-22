@@ -1,9 +1,36 @@
-"""Application configuration using pydantic-settings."""
+"""Application configuration using pydantic-settings.
 
-from pydantic_settings import BaseSettings
+Production safety contract (enforced by `validate_production`):
+- DEMO_MODE must be false.
+- SECRET_KEY must not be the published default and must be >= 32 chars.
+- ALLOWED_ORIGINS must NOT be ["*"] (the wildcard) — explicit origins required.
+- DATABASE_URL must be a real Postgres URL (the validator below already ensures
+  the value is non-empty; production additionally rejects placeholder hosts).
+
+These checks **raise** in production. They previously only logged warnings,
+which meant a misconfigured deploy started up and served traffic with auth
+disabled / forgeable JWTs / wildcard CORS. The hard failure is intentional.
+"""
+
+import logging
+import re
 from typing import List, Optional, Union
 
 from pydantic import field_validator
+from pydantic_settings import BaseSettings
+
+
+_DEFAULT_SECRET_KEY = "local-dev-secret-change-this-before-production"
+_KNOWN_WEAK_SECRETS = {
+    _DEFAULT_SECRET_KEY,
+    "changeme_in_production",
+    "changeme",
+    "secret",
+}
+_PRODUCTION_ENV_NAMES = {"production", "prod"}
+# Hosts that indicate an unconfigured / placeholder DB. Used only in
+# production validation.
+_PLACEHOLDER_DB_HOSTS = {"localhost", "127.0.0.1", "::1", "placeholder"}
 
 
 class Settings(BaseSettings):
@@ -24,23 +51,20 @@ class Settings(BaseSettings):
                 "DATABASE_URL is not set. Add it to Render env vars or your .env file."
             )
         v = v.strip()
-        # Normalise scheme to asyncpg
         if v.startswith("postgres://"):
             v = v.replace("postgres://", "postgresql+asyncpg://", 1)
         elif v.startswith("postgresql://") and "+asyncpg" not in v:
             v = v.replace("postgresql://", "postgresql+asyncpg://", 1)
         # asyncpg does NOT accept sslmode or ssl in the query string.
         # SSL is handled via connect_args={"ssl": True} in database.py.
-        import re
         v = re.sub(r"[?&]ssl(?:mode)?=[^&]*", "", v)
-        # Clean up any leftover trailing ? or &
         v = v.rstrip("?&")
         return v
 
     # ── Auth ───────────────────────────────────────────────────────────────────
-    # IMPORTANT: Set a strong random value in Render env vars.
-    # Generate one with: python -c "import secrets; print(secrets.token_hex(32))"
-    secret_key: str = "local-dev-secret-change-this-before-production"
+    # IMPORTANT: Set a strong random value in production env vars.
+    # Generate with: python -c "import secrets; print(secrets.token_hex(32))"
+    secret_key: str = _DEFAULT_SECRET_KEY
     access_token_expire_hours: int = 4
 
     # ── OpenAI ─────────────────────────────────────────────────────────────────
@@ -63,10 +87,8 @@ class Settings(BaseSettings):
 
     # ── Observability ──────────────────────────────────────────────────────────
     sentry_dsn: Optional[str] = None
-    # Set METRICS_SECRET_KEY in Render to enable the /metrics endpoint.
-    # Use: Authorization: Bearer <METRICS_SECRET_KEY>
     metrics_secret_key: Optional[str] = None
-    
+
     # ── CORS ───────────────────────────────────────────────────────────────────
     allowed_origins: Union[str, List[str]] = ["*"]
 
@@ -80,8 +102,6 @@ class Settings(BaseSettings):
             v = v.strip()
             if not v:
                 return ["*"]
-            
-            # Try parsing as JSON first (to handle ["a", "b"] format)
             if v.startswith("[") and v.endswith("]"):
                 try:
                     import json
@@ -89,19 +109,15 @@ class Settings(BaseSettings):
                     if isinstance(parsed, list):
                         return parsed
                 except Exception:
-                    pass # Fallback to manual cleaning
-
-            # Manual cleaning: remove brackets and quotes
+                    pass
             v = v.replace("[", "").replace("]", "").replace("\"", "").replace("'", "")
-            
-            # Handle comma-separated: "https://a.com, https://b.com"
             return [origin.strip() for origin in v.split(",") if origin.strip()]
         return v
 
     # ── Frontend ───────────────────────────────────────────────────────────────
     frontend_api_url: str = "http://localhost:8000"
 
-    # ── Redis (for rate limiting and quotas) ───────────────────
+    # ── Redis (rate limiting and quotas) ───────────────────
     redis_url: Optional[str] = None
 
     # ── User Tiers (quotas) ───────────────────────────────
@@ -110,46 +126,86 @@ class Settings(BaseSettings):
     pro_monthly_writes: int = 100000
     enterprise_monthly_writes: int = 1000000
 
+    # ── Helpers ────────────────────────────────────────────────────────────────
+    @property
+    def is_production(self) -> bool:
+        return (self.environment or "").strip().lower() in _PRODUCTION_ENV_NAMES
+
     def validate_production(self) -> None:
-        """Strict validation for production mode — raises on insecure config."""
-        if self.demo_mode:
+        """Strict validation for production mode.
+
+        RAISES RuntimeError on any unsafe config. Do not downgrade to a warning.
+        """
+        if not self.is_production:
+            # In dev/test the validator is a no-op. This is intentional so unit
+            # tests can construct Settings() without choosing a production-grade
+            # secret. CORS still has a runtime guard (see app.main).
             return
 
-        errors = []
+        errors: list[str] = []
 
+        # 1. DEMO_MODE — total auth bypass; never permitted in production.
+        if self.demo_mode:
+            errors.append(
+                "DEMO_MODE is true in production. Demo mode bypasses authentication "
+                "entirely (returns a synthetic user for every request) and must "
+                "never run in production. Set DEMO_MODE=false."
+            )
+
+        # 2. SECRET_KEY — JWTs use HS256, so a weak/default secret means every
+        #    token is forgeable.
         if (
-            self.secret_key.startswith("local-dev")
-            or self.secret_key == "changeme_in_production"
+            self.secret_key in _KNOWN_WEAK_SECRETS
+            or self.secret_key.startswith("local-dev")
+            or self.secret_key.startswith("test-")
             or len(self.secret_key) < 32
         ):
-            import logging
-            logging.getLogger(__name__).warning(
-                "SECRET_KEY is too weak or is the default value. "
-                "Please generate a strong one with: python -c \"import secrets; print(secrets.token_hex(32))\""
+            errors.append(
+                "SECRET_KEY is missing, the published default, or shorter than "
+                "32 characters. Generate a strong value with: "
+                "python -c \"import secrets; print(secrets.token_hex(32))\" "
+                "and set it via your deployment provider's secret store."
             )
 
+        # 3. ALLOWED_ORIGINS — wildcard with credentials = browser CORS chaos
+        #    plus non-browser clients can be tricked. Production must enumerate.
+        origins = self.allowed_origins if isinstance(self.allowed_origins, list) else [self.allowed_origins]
+        if not origins or "*" in origins:
+            errors.append(
+                "ALLOWED_ORIGINS is unset or contains '*'. Production deployments "
+                "must enumerate explicit origin URLs (e.g. https://nexmem.ai)."
+            )
+
+        # 4. DATABASE_URL — refuse to start against placeholder / loopback hosts
+        #    in production. asyncpg URLs are like postgresql+asyncpg://u:p@host:port/db.
+        try:
+            host = self.database_url.split("@", 1)[1].split("/", 1)[0].split(":")[0]
+            if host in _PLACEHOLDER_DB_HOSTS:
+                errors.append(
+                    f"DATABASE_URL points at the placeholder/loopback host '{host}'. "
+                    "Set DATABASE_URL to a real production database."
+                )
+        except (IndexError, ValueError):
+            errors.append("DATABASE_URL is not a recognisable Postgres connection URL.")
+
+        # 5. OPENAI_API_KEY — informational. We do not hard-fail on this because
+        #    a deployment can legitimately disable LLM-dependent features. The
+        #    health endpoint surfaces the unconfigured state.
         if not self.openai_api_key or self.openai_api_key == "sk-placeholder":
-            import logging
             logging.getLogger(__name__).warning(
-                "OPENAI_API_KEY is missing or placeholder — AI summarisation features disabled."
+                "OPENAI_API_KEY is missing or placeholder; LLM features will be disabled."
             )
 
-        if self.allowed_origins == ["*"]:
-            import logging
-            logging.getLogger(__name__).warning(
-                "ALLOWED_ORIGINS is '*' which allows any origin. "
-                "Set it to your frontend domain(s) in Render env vars."
+        if errors:
+            joined = "\n  - " + "\n  - ".join(errors)
+            raise RuntimeError(
+                "Refusing to start in production with unsafe configuration:" + joined
             )
-
-        # Removed the RuntimeError raise to prevent startup hangs.
-        pass
 
     class Config:
-        # Reads .env first, then .env.local for local overrides
         env_file = [".env", ".env.local"]
         env_file_encoding = "utf-8"
         extra = "ignore"
 
 
-# Global settings instance
 settings = Settings()

@@ -39,18 +39,21 @@ These actions live outside the codebase and must be done by an operator. They ar
 - **What:** When `settings.demo_mode` is true, every authenticated route returns a synthetic `User(id=DEMO_USER_ID)`. The `Authorization` header is not even read.
 - **Why critical:** A single mistaken env var in production means any unauthenticated client gets full access as the demo user, with all of that user's data accessible to all callers.
 - **Mitigation:** Plan §C2. Hard-fail at startup when `environment=production` and `demo_mode=true`.
+- **Status:** ✅ FIXED. `Settings.validate_production()` now raises `RuntimeError`. The lifespan calls it on startup, so the server cannot bind a port in unsafe production. Verified by `tests/test_config_safety.py::test_demo_mode_blocks_production_startup` and `tests/test_app_startup_safety.py::test_app_lifespan_refuses_unsafe_production`. The auth dependency itself still bypasses Authorization in demo mode (R-C7 fixes that).
 
 ### R-C3 · Default `SECRET_KEY` accepted in production
 - **Where:** `app/config.py:43`, `app/config.py:122-128`.
 - **What:** Default `SECRET_KEY="local-dev-secret-change-this-before-production"` is in the published repo. `validate_production` was changed to a `WARNING` log instead of a `RuntimeError`. Comment in code: *"Removed the RuntimeError raise to prevent startup hangs."*
 - **Why critical:** Anyone reading the repo can forge access tokens for any user against any deploy that forgot to override the secret. JWTs are HS256 — knowing the secret = full impersonation.
 - **Mitigation:** Plan §C2 (combined). Re-introduce hard fail in production.
+- **Status:** ✅ FIXED. Production rejects: the published default, `changeme*`, `local-dev*`, `test-*`, and anything shorter than 32 chars. Verified by `tests/test_config_safety.py` (4 tests).
 
 ### R-C4 · CORS `*` with `allow_credentials=True`
 - **Where:** `app/config.py:81`, `app/main.py:131-137`.
 - **What:** Default `allowed_origins=["*"]` and `allow_credentials=True`. Browsers downgrade `*` when credentials are involved, but a non-browser client or a misconfigured deployment with a single bad origin entry is exploitable. Production env (`render.yaml`) sets specific origins, but the default in code is dangerous.
 - **Why critical:** Cross-origin credentialed requests, CSRF on cookie-based clients (today there are none, but an MCP/desktop client could add one), and ambiguous browser behavior.
 - **Mitigation:** Plan §C2/§C4. Either set `allow_credentials=False` when `*`, or hard-fail in production.
+- **Status:** ✅ FIXED. Production hard-fails on `["*"]` or empty origins. In dev/test, the CORS middleware automatically forces `allow_credentials=False` whenever `*` is in the list. Verified by `tests/test_config_safety.py::test_wildcard_origin_blocks_production_startup` and `test_empty_origins_blocks_production_startup`.
 
 ### R-C5 · Migration 007 destroys data unconditionally
 - **Where:** `alembic/versions/007_standardize_vector_dim.py:18`.

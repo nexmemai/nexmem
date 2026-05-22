@@ -36,8 +36,9 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan — runs on startup and shutdown."""
+    # Refuses to start in production with unsafe config. Do not catch this.
     settings.validate_production()
-    
+
     # Task 4.3: Initialize Sentry if DSN is provided
     if settings.sentry_dsn:
         sentry_sdk.init(
@@ -137,10 +138,27 @@ app.add_middleware(SlowAPIMiddleware)
 _instrumentator = Instrumentator().instrument(app)
 
 # CORS middleware for frontend access
+#
+# Safety: when ALLOWED_ORIGINS is the wildcard "*" we MUST disable
+# allow_credentials, otherwise a misconfigured deployment can be tricked into
+# echoing credentials cross-origin from any site. Browsers usually downgrade
+# this combination, but non-browser clients do not. Production rejects "*"
+# entirely (see settings.validate_production); this is the dev/test guard.
+_origins = (
+    settings.allowed_origins
+    if isinstance(settings.allowed_origins, list)
+    else [settings.allowed_origins]
+)
+_allow_credentials = "*" not in _origins
+if "*" in _origins and not _allow_credentials:
+    logger.warning(
+        "CORS: wildcard origin '*' detected; forcing allow_credentials=False."
+    )
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.allowed_origins,
-    allow_credentials=True,
+    allow_origins=_origins,
+    allow_credentials=_allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )
