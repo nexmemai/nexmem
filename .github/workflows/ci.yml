@@ -48,13 +48,28 @@ jobs:
       - name: Type check with mypy
         run: mypy app --ignore-missing-imports || true
 
-      - name: Run unit + demo-mode tests
+      - name: Run unit + demo-mode tests (with coverage)
         env:
           DEMO_MODE: "true"
           SECRET_KEY: "ci-test-secret-but-32+-chars-long-for-tests"
           OPENAI_API_KEY: "sk-test-placeholder"
           # Tests under tests/integration/ are skipped without RUN_DB_TESTS=1.
-        run: pytest tests --tb=short --ignore=tests/integration
+        run: |
+          pytest tests --tb=short --ignore=tests/integration \
+            --cov=app --cov-report=term-missing --cov-report=xml \
+            --cov-fail-under=35
+        # `--cov-fail-under=35` is the unit-only floor; many code paths
+        # (services/retriever, services/scheduler, app/tasks.py) are
+        # exercised only by integration tests with a live Postgres.
+        # Raise this number whenever the unit suite genuinely warrants it.
+
+      - name: Upload coverage artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-unit
+          path: coverage.xml
+          if-no-files-found: ignore
 
   # ── Real Postgres + Redis: auth, RLS, quotas, migrations ───────────────────
   integration-tests:
@@ -117,7 +132,7 @@ jobs:
           psql -h localhost -U postgres -d nexmem_test -c "CREATE EXTENSION IF NOT EXISTS vector;"
           psql -h localhost -U postgres -d nexmem_test -c "CREATE EXTENSION IF NOT EXISTS pgcrypto;"
 
-      - name: Run integration tests (real Postgres + Redis)
+      - name: Run integration tests (real Postgres + Redis, with coverage)
         env:
           RUN_DB_TESTS: "1"
           DEMO_MODE: "false"
@@ -128,7 +143,17 @@ jobs:
           REDIS_URL: "redis://localhost:6379/0"
           # ML-heavy tests still need huggingface downloads; run those nightly.
           RUN_ML_TESTS: "0"
-        run: pytest tests/integration --tb=short
+        run: |
+          pytest tests/integration --tb=short \
+            --cov=app --cov-report=term-missing --cov-report=xml
+
+      - name: Upload integration coverage artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-integration
+          path: coverage.xml
+          if-no-files-found: ignore
 
   # ── Static security scan ───────────────────────────────────────────────────
   security-audit:

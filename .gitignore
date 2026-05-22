@@ -61,3 +61,10 @@ nul
 
 # Render/Build
 .render/
+
+
+# Test coverage artifacts
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
