@@ -105,3 +105,27 @@ def verify_api_key(plain_key: str, hashed_key: str) -> bool:
 def hash_refresh_token(token: str) -> str:
     """Return the storage hash of a refresh token (sha256 hex)."""
     return hashlib.sha256(token.encode()).hexdigest()
+
+
+# ── Phase 3: email-verification + password-reset tokens ──────────────────────
+# Both flows use a single shared shape:
+#   * raw token = url-safe high-entropy string returned to the user once
+#   * stored hash = sha256(raw) compared with secrets.compare_digest
+# Reuse ``hash_refresh_token`` semantics: same hash function, different
+# table. We expose dedicated helpers so callers do not import the
+# refresh-token name in unrelated flows.
+def generate_url_safe_token(nbytes: int = 32) -> tuple[str, str]:
+    """Return ``(raw_token, sha256_hex)`` for a single-use email token.
+
+    The raw token is URL-safe (suitable for embedding in a verification
+    or reset link) with at least 256 bits of entropy. The hash is what
+    the database stores; the raw token is only sent once.
+    """
+    raw = secrets.token_urlsafe(nbytes)
+    digest = hashlib.sha256(raw.encode()).hexdigest()
+    return raw, digest
+
+
+def hash_url_safe_token(raw_token: str) -> str:
+    """Return the storage hash for a single-use email token."""
+    return hashlib.sha256(raw_token.encode()).hexdigest()

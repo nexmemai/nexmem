@@ -74,8 +74,10 @@ async def get_current_user(
                 id=demo_user.id,
                 email=demo_user.email,
                 wallet_address=demo_user.wallet_address,
+                hashed_password=demo_user.hashed_password,
                 is_active=demo_user.is_active,
                 created_at=demo_user.created_at,
+                email_verified_at=demo_user.email_verified_at,
             )
         else:
             result = await db.execute(select(APIKey).where(APIKey.key_hash == key_hash))
@@ -130,8 +132,10 @@ async def get_current_user(
                 id=demo_user.id,
                 email=demo_user.email,
                 wallet_address=demo_user.wallet_address,
+                hashed_password=demo_user.hashed_password,
                 is_active=demo_user.is_active,
                 created_at=demo_user.created_at,
+                email_verified_at=demo_user.email_verified_at,
             )
         else:
             result = await db.execute(select(User).where(User.id == user_uuid))

@@ -30,6 +30,7 @@ class DemoUser:
     tier: str = "free"
     created_at: datetime = field(default_factory=datetime.utcnow)
     total_tokens_used: int = 0
+    email_verified_at: Optional[datetime] = None
 
 
 @dataclass
@@ -83,11 +84,26 @@ def create_user(
         "tier": "free",
         "created_at": datetime.utcnow(),
         "total_tokens_used": 0,
+        "email_verified_at": None,
     }
     demo_db.demo_users[str(new_id)] = record
     if email:
         demo_db.demo_users_by_email[email.lower()] = str(new_id)
     return _coerce_user(record)
+
+
+def update_user_password(user_id: uuid.UUID, hashed_password: str) -> None:
+    """Rotate a demo user's hashed password (P3-A2, P3-A3)."""
+    rec = demo_db.demo_users.get(str(user_id))
+    if rec is not None:
+        rec["hashed_password"] = hashed_password
+
+
+def mark_email_verified(user_id: uuid.UUID, when: Optional[datetime] = None) -> None:
+    """Set email_verified_at on a demo user (P3-A1)."""
+    rec = demo_db.demo_users.get(str(user_id))
+    if rec is not None:
+        rec["email_verified_at"] = when or datetime.utcnow()
 
 
 # ── API keys ─────────────────────────────────────────────────────────────────
@@ -138,14 +154,31 @@ def delete_api_key(key_id: uuid.UUID, user_id: uuid.UUID) -> bool:
 
 
 # ── Refresh tokens ───────────────────────────────────────────────────────────
-def add_refresh_token(user_id: uuid.UUID, token_hash: str, expires_at: datetime) -> None:
+def add_refresh_token(
+    user_id: uuid.UUID,
+    token_hash: str,
+    expires_at: datetime,
+    user_agent: Optional[str] = None,
+    ip_address: Optional[str] = None,
+) -> uuid.UUID:
+    """Insert a refresh-token row and return its synthetic id.
+
+    The id mirrors ``RefreshToken.id`` in production so the
+    ``/auth/sessions`` listing endpoint can return a stable handle the
+    client uses to revoke a single session.
+    """
+    new_id = uuid.uuid4()
     demo_db.demo_refresh_tokens[token_hash] = {
+        "id": new_id,
         "user_id": user_id,
         "token_hash": token_hash,
         "issued_at": datetime.utcnow(),
         "expires_at": expires_at,
         "revoked_at": None,
+        "user_agent": user_agent,
+        "ip_address": ip_address,
     }
+    return new_id
 
 
 def is_refresh_token_active(token_hash: str, user_id: uuid.UUID) -> bool:
@@ -169,3 +202,95 @@ def revoke_all_refresh_tokens(user_id: uuid.UUID) -> None:
     for rec in demo_db.demo_refresh_tokens.values():
         if str(rec["user_id"]) == str(user_id) and rec["revoked_at"] is None:
             rec["revoked_at"] = datetime.utcnow()
+
+
+def list_active_refresh_tokens(user_id: uuid.UUID) -> list[dict]:
+    """Return the live (non-revoked, non-expired) refresh-token records.
+
+    Used by ``GET /auth/sessions`` (P3-A4). Returns dicts so the
+    caller can map them to the ``SessionResponse`` schema.
+    """
+    now = datetime.utcnow()
+    out: list[dict] = []
+    for rec in demo_db.demo_refresh_tokens.values():
+        if str(rec["user_id"]) != str(user_id):
+            continue
+        if rec["revoked_at"] is not None:
+            continue
+        if rec["expires_at"] < now:
+            continue
+        out.append(rec)
+    return sorted(out, key=lambda r: r["issued_at"], reverse=True)
+
+
+def revoke_refresh_token_by_id(session_id: uuid.UUID, user_id: uuid.UUID) -> bool:
+    """Revoke a single session by row id (P3-A4)."""
+    for rec in demo_db.demo_refresh_tokens.values():
+        if (
+            rec.get("id") == session_id
+            and str(rec["user_id"]) == str(user_id)
+            and rec["revoked_at"] is None
+        ):
+            rec["revoked_at"] = datetime.utcnow()
+            return True
+    return False
+
+
+# ── Email verification tokens (P3-A1) ────────────────────────────────────────
+def add_email_verification_token(
+    user_id: uuid.UUID, token_hash: str, expires_at: datetime
+) -> None:
+    demo_db.demo_email_verification_tokens[token_hash] = {
+        "id": uuid.uuid4(),
+        "user_id": user_id,
+        "token_hash": token_hash,
+        "created_at": datetime.utcnow(),
+        "expires_at": expires_at,
+        "consumed_at": None,
+    }
+
+
+def consume_email_verification_token(token_hash: str) -> Optional[uuid.UUID]:
+    """Atomically consume a verification token. Returns user_id on success."""
+    rec = demo_db.demo_email_verification_tokens.get(token_hash)
+    if rec is None:
+        return None
+    if rec["consumed_at"] is not None:
+        return None
+    if rec["expires_at"] < datetime.utcnow():
+        return None
+    rec["consumed_at"] = datetime.utcnow()
+    return rec["user_id"]
+
+
+# ── Password reset tokens (P3-A2) ────────────────────────────────────────────
+def add_password_reset_token(
+    user_id: uuid.UUID,
+    token_hash: str,
+    expires_at: datetime,
+    ip_address: Optional[str] = None,
+    user_agent: Optional[str] = None,
+) -> None:
+    demo_db.demo_password_reset_tokens[token_hash] = {
+        "id": uuid.uuid4(),
+        "user_id": user_id,
+        "token_hash": token_hash,
+        "created_at": datetime.utcnow(),
+        "expires_at": expires_at,
+        "consumed_at": None,
+        "ip_address": ip_address,
+        "user_agent": user_agent,
+    }
+
+
+def consume_password_reset_token(token_hash: str) -> Optional[uuid.UUID]:
+    """Atomically consume a reset token. Returns user_id on success."""
+    rec = demo_db.demo_password_reset_tokens.get(token_hash)
+    if rec is None:
+        return None
+    if rec["consumed_at"] is not None:
+        return None
+    if rec["expires_at"] < datetime.utcnow():
+        return None
+    rec["consumed_at"] = datetime.utcnow()
+    return rec["user_id"]
