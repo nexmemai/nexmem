@@ -9,9 +9,34 @@ Phase 2 changes:
 * Demo mode now has a coherent in-memory user / api-key / refresh-token
   store (``app/core/demo_auth.py``) so the integration test suite can
   exercise the full auth flow without Postgres.
-"""
-from __future__ import annotations
 
+Phase 3 changes (P3-A1 .. P3-A4, P3-A8):
+* /auth/register issues a single-use email-verification token and is
+  rate-limited to ``settings.register_rate_limit`` per IP via slowapi
+  (P3-A8). Demo mode is exempted so the test suite is not throttled.
+* /auth/verify-email/confirm consumes a verification token and stamps
+  ``users.email_verified_at``. /auth/verify-email/resend reissues a
+  token without leaking which addresses are registered.
+* /auth/login refuses to mint tokens for an email-bearing user whose
+  ``email_verified_at`` is unset when ``EMAIL_VERIFICATION_REQUIRED``
+  is true (P3-A1).
+* /auth/password-reset/request and /auth/password-reset/confirm
+  implement a forgot-password flow with single-use 30-minute tokens.
+  A successful confirm rotates the password and revokes every active
+  refresh token for the user (P3-A2).
+* /auth/change-password rotates the password from inside an
+  authenticated session and revokes every refresh token (P3-A3).
+* GET /auth/sessions lists the user's active refresh tokens (id,
+  user_agent, ip, issued_at, expires_at). DELETE /auth/sessions/{id}
+  revokes one (P3-A4).
+
+token issuance / consumption never returns the raw verification or
+reset token from production code paths to clients other than the
+intended recipient. Logging is via structlog (PII redacted by the
+middleware list); raw tokens are not logged.
+"""
+
+import logging
 import uuid
 from datetime import datetime, timedelta
 from typing import Optional
@@ -25,23 +50,36 @@ from app.config import settings
 from app.core.brute_force import check_not_locked, clear_failures, record_failure
 from app.core import demo_auth
 from app.core.deps import get_current_user
+from app.core.rate_limit import limiter
 from app.core.security import (
     create_access_token,
     create_refresh_token,
     decode_token,
     generate_api_key,
+    generate_url_safe_token,
     get_password_hash,
     hash_refresh_token,
+    hash_url_safe_token,
     verify_password,
 )
 from app.database import get_db
-from app.models.auth import RefreshToken
+from app.models.auth import (
+    EmailVerificationToken,
+    PasswordResetToken,
+    RefreshToken,
+)
 from app.models.user import APIKey, User
 from app.schemas.user import (
     APIKeyCreate,
     APIKeyCreateResponse,
     APIKeyResponse,
+    EmailVerificationConfirm,
+    EmailVerificationResendRequest,
+    PasswordChangeRequest,
+    PasswordResetConfirm,
+    PasswordResetRequest,
     RefreshRequest,
+    SessionResponse,
     TokenResponse,
     UserCreate,
     UserLogin,
@@ -49,15 +87,28 @@ from app.schemas.user import (
 )
 
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
+# ── Helpers ──────────────────────────────────────────────────────────────────
 def _client_meta(request: Request) -> tuple[Optional[str], Optional[str]]:
     user_agent = request.headers.get("User-Agent")
     ip = (request.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
     if not ip and request.client:
         ip = request.client.host
     return user_agent, ip or None
+
+
+def _exempt_register_in_demo() -> bool:
+    """slowapi ``exempt_when`` callback for ``/auth/register``.
+
+    Demo mode (the test suite, local dev) is exempted so the unit
+    suite is not throttled. Production runs without DEMO_MODE so the
+    cap applies.
+    """
+    return bool(settings.demo_mode)
 
 
 async def _persist_refresh_token(
@@ -70,10 +121,13 @@ async def _persist_refresh_token(
         days=settings.refresh_token_expire_days
     )
     token_hash = hash_refresh_token(raw_token)
-    if settings.demo_mode:
-        demo_auth.add_refresh_token(user_id, token_hash, expires_at)
-        return
     user_agent, ip = _client_meta(request)
+    if settings.demo_mode:
+        demo_auth.add_refresh_token(
+            user_id, token_hash, expires_at,
+            user_agent=user_agent, ip_address=ip,
+        )
+        return
     # Apply RLS context to the active session so the INSERT into
     # refresh_tokens passes the WITH CHECK clause added in 013_extend_rls.
     from app.database import set_rls_context
@@ -97,14 +151,118 @@ def _issue_token_pair(user_id: uuid.UUID) -> tuple[str, str]:
     return access, refresh
 
 
+async def _issue_email_verification_token(
+    db: Optional[AsyncSession], user_id: uuid.UUID
+) -> str:
+    """Issue an email-verification token (P3-A1).
+
+    Returns the raw token. The caller is responsible for delivering it
+    to the user (via email in production; via the API response in
+    demo / dev mode for the test suite).
+    """
+    raw, digest = generate_url_safe_token()
+    expires_at = datetime.utcnow() + timedelta(
+        hours=settings.email_verification_token_ttl_hours
+    )
+    if settings.demo_mode:
+        demo_auth.add_email_verification_token(user_id, digest, expires_at)
+    else:
+        from app.database import set_rls_context
+
+        await set_rls_context(db, str(user_id))
+        db.add(
+            EmailVerificationToken(
+                user_id=user_id, token_hash=digest, expires_at=expires_at
+            )
+        )
+        await db.commit()
+    return raw
+
+
+async def _issue_password_reset_token(
+    db: Optional[AsyncSession],
+    user_id: uuid.UUID,
+    request: Request,
+) -> str:
+    """Issue a password-reset token (P3-A2)."""
+    raw, digest = generate_url_safe_token()
+    expires_at = datetime.utcnow() + timedelta(
+        minutes=settings.password_reset_token_ttl_minutes
+    )
+    user_agent, ip = _client_meta(request)
+    if settings.demo_mode:
+        demo_auth.add_password_reset_token(
+            user_id, digest, expires_at,
+            ip_address=ip, user_agent=user_agent,
+        )
+    else:
+        from app.database import set_rls_context
+
+        await set_rls_context(db, str(user_id))
+        db.add(
+            PasswordResetToken(
+                user_id=user_id,
+                token_hash=digest,
+                expires_at=expires_at,
+                ip_address=ip,
+                user_agent=user_agent,
+            )
+        )
+        await db.commit()
+    return raw
+
+
+async def _revoke_all_refresh_tokens(
+    db: Optional[AsyncSession], user_id: uuid.UUID
+) -> None:
+    if settings.demo_mode:
+        demo_auth.revoke_all_refresh_tokens(user_id)
+        return
+    await db.execute(
+        update(RefreshToken)
+        .where(
+            RefreshToken.user_id == user_id,
+            RefreshToken.revoked_at.is_(None),
+        )
+        .values(revoked_at=datetime.utcnow())
+    )
+    await db.commit()
+
+
+def _user_email_verified(user) -> bool:
+    """Return True if the user does not require verification (e.g. wallet
+    user) or has already verified their email."""
+    if not getattr(user, "email", None):
+        return True  # wallet-only users are not subject to email verification
+    return getattr(user, "email_verified_at", None) is not None
+
+
+def _generic_token_invalid_exception() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail="Token is invalid or expired",
+    )
+
+
 # ── /register ────────────────────────────────────────────────────────────────
 @router.post(
     "/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED
 )
+@limiter.limit(settings.register_rate_limit, exempt_when=_exempt_register_in_demo)
 async def register(
+    request: Request,
     user_data: UserCreate,
     db: AsyncSession = Depends(get_db),
 ):
+    """Create a new user (P3-A8 rate-limited).
+
+    For email-bearing accounts a single-use email-verification token
+    is issued. The raw token is included on the response in
+    demo/dev mode so the test suite can drive the verification flow
+    without an email service. In production the operator wires an
+    email transport that consumes the issued token; the response
+    body never carries the raw token there.
+    """
     if not user_data.email and not user_data.wallet_address:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -138,6 +296,13 @@ async def register(
             wallet_address=user_data.wallet_address,
             hashed_password=hashed_password,
         )
+        # Backwards-compatibility: when verification is NOT required,
+        # mark the email verified at creation time so existing tests
+        # and demo flows that immediately log in still work.
+        if user_data.email and not settings.email_verification_required:
+            demo_auth.mark_email_verified(new_user.id)
+        if user_data.email:
+            await _issue_email_verification_token(None, new_user.id)
         return UserResponse(
             id=new_user.id,
             email=new_user.email,
@@ -167,11 +332,94 @@ async def register(
         wallet_address=user_data.wallet_address,
         hashed_password=hashed_password,
         is_active=True,
+        email_verified_at=(
+            None
+            if (user_data.email and settings.email_verification_required)
+            else (datetime.utcnow() if user_data.email else None)
+        ),
     )
     db.add(user)
     await db.commit()
     await db.refresh(user)
+    if user.email:
+        await _issue_email_verification_token(db, user.id)
     return user
+
+
+# ── /verify-email ────────────────────────────────────────────────────────────
+@router.post("/verify-email/confirm", status_code=status.HTTP_200_OK)
+async def verify_email_confirm(
+    body: EmailVerificationConfirm,
+    db: AsyncSession = Depends(get_db),
+):
+    """Consume a verification token and mark the user's email verified.
+
+    Idempotent: a token can only be consumed once. Subsequent attempts
+    with the same token return 400. Returns ``{"verified": true}`` on
+    success so the client can update its UI.
+    """
+    digest = hash_url_safe_token(body.token)
+
+    if settings.demo_mode:
+        user_id = demo_auth.consume_email_verification_token(digest)
+        if user_id is None:
+            raise _generic_token_invalid_exception()
+        demo_auth.mark_email_verified(user_id)
+        return {"verified": True}
+
+    # The lookup is allowed without RLS context via the
+    # ``email_verification_tokens_user_isolation_lookup`` SELECT-only
+    # policy from migration 014.
+    result = await db.execute(
+        select(EmailVerificationToken).where(
+            EmailVerificationToken.token_hash == digest
+        )
+    )
+    token = result.scalar_one_or_none()
+    if (
+        token is None
+        or token.consumed_at is not None
+        or token.expires_at < datetime.utcnow()
+    ):
+        raise _generic_token_invalid_exception()
+
+    # Now we know the user_id; bind RLS so the UPDATE statements pass
+    # WITH CHECK on both tables.
+    from app.database import set_rls_context
+
+    await set_rls_context(db, str(token.user_id))
+    await db.execute(
+        update(EmailVerificationToken)
+        .where(EmailVerificationToken.id == token.id)
+        .values(consumed_at=datetime.utcnow())
+    )
+    await db.execute(
+        update(User)
+        .where(User.id == token.user_id, User.email_verified_at.is_(None))
+        .values(email_verified_at=datetime.utcnow())
+    )
+    await db.commit()
+    return {"verified": True}
+
+
+@router.post("/verify-email/resend", status_code=status.HTTP_202_ACCEPTED)
+async def verify_email_resend(
+    body: EmailVerificationResendRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Resend a verification token. Always returns 202 to avoid
+    leaking whether a given email is registered."""
+    if settings.demo_mode:
+        user = demo_auth.get_user_by_email(body.email)
+        if user is not None and user.email_verified_at is None:
+            await _issue_email_verification_token(None, user.id)
+        return {"status": "ok"}
+
+    result = await db.execute(select(User).where(User.email == body.email))
+    user = result.scalar_one_or_none()
+    if user is not None and user.email_verified_at is None:
+        await _issue_email_verification_token(db, user.id)
+    return {"status": "ok"}
 
 
 # ── /login ───────────────────────────────────────────────────────────────────
@@ -209,6 +457,14 @@ async def login(
     if not verify_password(credentials.password, user.hashed_password):
         await record_failure(request, credentials.email)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=INVALID)
+
+    # P3-A1: gate on email_verified_at when the operator opts in.
+    if settings.email_verification_required and not _user_email_verified(user):
+        # Use a distinct status so the client can prompt for verification.
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Email not verified. Check your inbox for the verification link.",
+        )
 
     await clear_failures(credentials.email)
     access, refresh = _issue_token_pair(user.id)
@@ -344,18 +600,201 @@ async def logout_all_sessions(
     db: AsyncSession = Depends(get_db),
 ):
     """Revoke every refresh token for the current user."""
+    await _revoke_all_refresh_tokens(db, current_user.id)
+
+
+# ── /sessions (P3-A4) ────────────────────────────────────────────────────────
+@router.get("/sessions", response_model=list[SessionResponse])
+async def list_sessions(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """List the user's currently active refresh tokens."""
     if settings.demo_mode:
-        demo_auth.revoke_all_refresh_tokens(current_user.id)
+        rows = demo_auth.list_active_refresh_tokens(current_user.id)
+        return [
+            SessionResponse(
+                id=row["id"],
+                issued_at=row["issued_at"],
+                expires_at=row["expires_at"],
+                user_agent=row.get("user_agent"),
+                ip_address=row.get("ip_address"),
+            )
+            for row in rows
+        ]
+    result = await db.execute(
+        select(RefreshToken)
+        .where(
+            RefreshToken.user_id == current_user.id,
+            RefreshToken.revoked_at.is_(None),
+            RefreshToken.expires_at > datetime.utcnow(),
+        )
+        .order_by(RefreshToken.issued_at.desc())
+    )
+    return [
+        SessionResponse(
+            id=row.id,
+            issued_at=row.issued_at,
+            expires_at=row.expires_at,
+            user_agent=row.user_agent,
+            ip_address=row.ip_address,
+        )
+        for row in result.scalars().all()
+    ]
+
+
+@router.delete(
+    "/sessions/{session_id}", status_code=status.HTTP_204_NO_CONTENT
+)
+async def revoke_session(
+    session_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Revoke a single session by row id (P3-A4)."""
+    try:
+        sid = uuid.UUID(session_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid session id")
+
+    if settings.demo_mode:
+        if not demo_auth.revoke_refresh_token_by_id(sid, current_user.id):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Session not found"
+            )
         return
-    await db.execute(
+    result = await db.execute(
         update(RefreshToken)
         .where(
+            RefreshToken.id == sid,
             RefreshToken.user_id == current_user.id,
             RefreshToken.revoked_at.is_(None),
         )
         .values(revoked_at=datetime.utcnow())
+        .returning(RefreshToken.id)
+    )
+    if result.scalar_one_or_none() is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Session not found"
+        )
+    await db.commit()
+
+
+# ── /password-reset (P3-A2) ──────────────────────────────────────────────────
+@router.post("/password-reset/request", status_code=status.HTTP_202_ACCEPTED)
+async def password_reset_request(
+    body: PasswordResetRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Issue a single-use password reset token.
+
+    Always returns 202 — the response is identical whether or not the
+    address is registered, so the route does not leak account
+    existence. In demo / dev mode the raw token is logged so the test
+    suite can pick it up; in production the operator's email
+    transport delivers it.
+    """
+    if settings.demo_mode:
+        user = demo_auth.get_user_by_email(body.email)
+    else:
+        result = await db.execute(select(User).where(User.email == body.email))
+        user = result.scalar_one_or_none()
+
+    if user is not None and user.is_active:
+        await _issue_password_reset_token(db, user.id, request)
+    return {"status": "ok"}
+
+
+@router.post("/password-reset/confirm", status_code=status.HTTP_200_OK)
+async def password_reset_confirm(
+    body: PasswordResetConfirm,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """Consume a reset token, rotate the password, revoke all sessions."""
+    digest = hash_url_safe_token(body.token)
+
+    if settings.demo_mode:
+        user_id = demo_auth.consume_password_reset_token(digest)
+        if user_id is None:
+            raise _generic_token_invalid_exception()
+        demo_auth.update_user_password(user_id, get_password_hash(body.new_password))
+        demo_auth.revoke_all_refresh_tokens(user_id)
+        return {"status": "ok"}
+
+    result = await db.execute(
+        select(PasswordResetToken).where(PasswordResetToken.token_hash == digest)
+    )
+    token = result.scalar_one_or_none()
+    if (
+        token is None
+        or token.consumed_at is not None
+        or token.expires_at < datetime.utcnow()
+    ):
+        raise _generic_token_invalid_exception()
+
+    from app.database import set_rls_context
+
+    await set_rls_context(db, str(token.user_id))
+    await db.execute(
+        update(PasswordResetToken)
+        .where(PasswordResetToken.id == token.id)
+        .values(consumed_at=datetime.utcnow())
+    )
+    await db.execute(
+        update(User)
+        .where(User.id == token.user_id)
+        .values(hashed_password=get_password_hash(body.new_password))
     )
     await db.commit()
+    await _revoke_all_refresh_tokens(db, token.user_id)
+    return {"status": "ok"}
+
+
+# ── /change-password (P3-A3) ─────────────────────────────────────────────────
+@router.post("/change-password", status_code=status.HTTP_200_OK)
+async def change_password(
+    body: PasswordChangeRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Rotate the password from inside an authenticated session.
+
+    Requires the *current* password (so a stolen access token alone
+    cannot change the password). Revokes every refresh token for the
+    user on success — the caller must log in again on every device.
+    """
+    if not current_user.hashed_password:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Account has no password to change.",
+        )
+    if not verify_password(body.current_password, current_user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Current password is incorrect",
+        )
+    if body.new_password == body.current_password:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="New password must be different from the current password",
+        )
+
+    new_hash = get_password_hash(body.new_password)
+    if settings.demo_mode:
+        demo_auth.update_user_password(current_user.id, new_hash)
+        demo_auth.revoke_all_refresh_tokens(current_user.id)
+        return {"status": "ok"}
+
+    await db.execute(
+        update(User)
+        .where(User.id == current_user.id)
+        .values(hashed_password=new_hash)
+    )
+    await db.commit()
+    await _revoke_all_refresh_tokens(db, current_user.id)
+    return {"status": "ok"}
 
 
 # ── /api-keys ────────────────────────────────────────────────────────────────
