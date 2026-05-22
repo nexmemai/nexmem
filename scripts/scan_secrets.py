@@ -164,6 +164,11 @@ _SKIP_PATH_PREFIXES = (
     "BACKEND_RISKS.md",
     "BACKEND_HARDENING_PHASE2.md",
     "docs/INCIDENT_RUNBOOK.md",
+    # CONTRIBUTING.md documents the secret-pattern fixture rule and
+    # therefore intentionally shows wrong-form examples. The
+    # documentation IS the protection; scanning it would defeat the
+    # docs themselves.
+    "CONTRIBUTING.md",
 )
 
 
