@@ -3,6 +3,11 @@ Concurrent write test to verify async safety of NLP/embedding operations.
 
 Sends 10 concurrent POST /api/v1/memory/episode/write requests
 and verifies all return 200 within 500ms.
+
+Marked as ``slow`` because it lazy-loads the all-MiniLM-L6-v2 model on
+first call, which requires network access to huggingface.co. CI's
+``unit`` and ``integration`` jobs both deselect this marker; run
+explicitly with ``pytest -m slow`` when needed.
 """
 
 import asyncio
@@ -12,6 +17,9 @@ from httpx import AsyncClient, ASGITransport
 
 from app.main import app
 from app.config import settings
+
+
+pytestmark = pytest.mark.slow
 
 
 @pytest.fixture(autouse=True)
