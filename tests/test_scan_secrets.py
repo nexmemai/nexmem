@@ -65,27 +65,30 @@ _POSITIVE_CASES = [
     (
         "stripe-live-secret-key",
         "billing.py",
-        'stripe.api_key = "NEXMEM_REPLACED_LITERAL_24Z"\n',
+        # Build at runtime so no source literal triggers GitHub's
+        # secret-scan / push-protection. The string only exists in
+        # memory during the test.
+        'stripe.api_key = "' + 'sk_' + 'live_' + 'A' * 24 + '"\n',
     ),
     (
         "openai-api-key",
         "llm.py",
-        'OPENAI = "sk-' + "A" * 48 + '"\n',
+        'OPENAI = "' + 'sk-' + "A" * 48 + '"\n',
     ),
     (
         "slack-token",
         "notify.ts",
-        'const t = "xoxb-1234567890-abcdefghij";\n',
+        'const t = "' + 'xoxb-' + '1234567890-abcdefghij' + '";\n',
     ),
     (
         "google-api-key",
         "maps.js",
-        'const key = "AIzaSy' + "B" * 33 + '";\n',
+        'const key = "' + 'AIzaSy' + "B" * 33 + '";\n',
     ),
     (
         "github-personal-access-token",
         "deploy.sh",
-        'GH_TOKEN=ghp_' + "x" * 36 + '\n',
+        'GH_TOKEN=' + 'ghp_' + "x" * 36 + '\n',
     ),
     (
         "rsa-private-key-block",
