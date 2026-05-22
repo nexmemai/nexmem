@@ -12,6 +12,7 @@ from sqlalchemy import select, text
 from app.database import get_db
 from app.config import settings
 from app.core.deps import get_current_user
+from app.core.quotas import enforce_read_quota
 from app.models.user import User
 from app.services.retriever import get_retrieval_context
 from app.services.reranker import get_top_context
@@ -67,7 +68,7 @@ def _generate_demo_reply(
 
 from app.schemas.memory import RAGRequest, RAGResponse
 
-@router.post("/rag/chat", response_model=RAGResponse)
+@router.post("/rag/chat", response_model=RAGResponse, dependencies=[Depends(enforce_read_quota)])
 async def rag_chat(
     request: RAGRequest,
     current_user: User = Depends(get_current_user),

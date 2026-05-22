@@ -10,6 +10,7 @@ from sqlalchemy import select
 
 from app.database import get_db
 from app.core.deps import get_current_user
+from app.core.quotas import enforce_write_quota
 from app.models.user import User
 from app.config import settings
 
@@ -64,7 +65,7 @@ async def get_procedural(
     }
 
 
-@router.post("/{user_id}/procedural/settings")
+@router.post("/{user_id}/procedural/settings", dependencies=[Depends(enforce_write_quota)])
 async def upsert_procedural(
     user_id: str,
     body: ProceduralUpsertRequest,

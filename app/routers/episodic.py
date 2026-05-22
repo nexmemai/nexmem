@@ -12,6 +12,7 @@ from sqlalchemy import select, desc, func
 from app.database import get_db
 from app.config import settings
 from app.core.deps import get_current_user
+from app.core.quotas import enforce_write_quota
 from app.models.user import User
 
 router = APIRouter(prefix="/agents", tags=["episodic"])
@@ -28,7 +29,7 @@ class EpisodeCreateRequest(BaseModel):
     store_episodic: bool = True
 
 
-@router.post("/{user_id}/episodes", response_model=dict)
+@router.post("/{user_id}/episodes", response_model=dict, dependencies=[Depends(enforce_write_quota)])
 async def create_episode(
     user_id: str,
     body: EpisodeCreateRequest,

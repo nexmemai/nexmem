@@ -13,6 +13,7 @@ from sqlalchemy import select, desc, func, text
 from app.database import get_db
 from app.config import settings
 from app.core.deps import get_current_user
+from app.core.quotas import enforce_write_quota
 from app.models.user import User
 from app.services.embedder import embedder
 
@@ -34,7 +35,7 @@ class SemanticSearchRequest(BaseModel):
     query: str
 
 
-@router.post("/{user_id}/semantics", response_model=dict)
+@router.post("/{user_id}/semantics", response_model=dict, dependencies=[Depends(enforce_write_quota)])
 async def create_semantic(
     user_id: str,
     body: SemanticCreateRequest,
