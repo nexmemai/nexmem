@@ -4,7 +4,7 @@ services:
     env: python
     plan: free
     buildCommand: "pip install --upgrade pip && pip install -r requirements.txt"
-    startCommand: "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT"
+    startCommand: "python scripts/run_migrations.py && uvicorn app.main:app --host 0.0.0.0 --port $PORT"
     healthCheckPath: /health/live
     envVars:
       # DATABASE_URL must be supplied via the Render dashboard.

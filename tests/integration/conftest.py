@@ -52,14 +52,25 @@ def pytest_collection_modifyitems(config, items) -> None:
 
 
 def _run_alembic_upgrade_head() -> None:
-    """Apply Alembic migrations to head, fail loudly on error."""
-    from alembic import command
-    from alembic.config import Config
+    """Apply Alembic migrations to head, fail loudly on error.
 
-    cfg = Config(os.path.join(os.path.dirname(__file__), "..", "..", "alembic.ini"))
-    # alembic.ini default `script_location = alembic` is relative to the
-    # config file's directory, which is correct for our layout.
-    command.upgrade(cfg, "head")
+    Phase 2 (R-H10): wraps the alembic call in
+    `scripts/run_migrations.py` so the integration suite exercises
+    the same race-safe entry point that the production Dockerfile /
+    render.yaml use.
+    """
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[2]
+    cmd = [sys.executable, str(repo_root / "scripts" / "run_migrations.py")]
+    result = subprocess.run(cmd, env=os.environ.copy(), capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"run_migrations.py failed with exit {result.returncode}:\n"
+            f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+        )
 
 
 @pytest_asyncio.fixture(scope="session", autouse=True)
