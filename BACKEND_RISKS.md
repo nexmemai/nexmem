@@ -28,10 +28,11 @@ These actions live outside the codebase and must be done by an operator. They ar
 ## CRITICAL
 
 ### R-C1 · Hardcoded Supabase password in repository
-- **Where:** `alembic/env.py:35-37`, `scripts/apply_migrations.py:7`.
+- **Where:** `alembic/env.py:35-37`, `scripts/apply_migrations.py:7`, `scripts/clear_keys.py:5`, `scripts/migrate_to_uuid.py:5`.
 - **What:** The Supabase production database password (`***REDACTED_PASSWORD***`, URL-encoded `***REDACTED_PASSWORD***`) is checked into the repo as a "fail-safe override" when the configured DATABASE_URL is missing or matches a stale hostname.
 - **Why critical:** Anyone with read access to the repo, *current or historical*, has full DB access. Public repo or a leaked clone = total loss.
 - **Mitigation:** Plan §C1. Hard-fail on missing DATABASE_URL; remove the literal.
+- **Status:** ✅ FIXED on branch `backend/hardening-private-beta`. `alembic/env.py`, `scripts/apply_migrations.py`, `scripts/clear_keys.py`, `scripts/migrate_to_uuid.py` and `render.yaml` no longer contain any literal credentials. Verified by `tests/test_alembic_env.py::test_no_supabase_password_or_project_in_repo_source` which scans the whole repo. **The committed password must still be rotated in Supabase and scrubbed from git history — see §Rotations Required.**
 
 ### R-C2 · `DEMO_MODE=true` disables auth
 - **Where:** `app/core/deps.py:18-22`.
