@@ -9,6 +9,7 @@ from app.config import settings
 from app.routers import episodic, semantic, procedural, graph, rag, auth, health, memory, apps, gdpr
 from app.core.rate_limit import limiter
 from app.middleware.body_size_limit import BodySizeLimitMiddleware
+from app.middleware.read_only_mode import ReadOnlyModeMiddleware
 from slowapi.middleware import SlowAPIMiddleware
 from slowapi.errors import RateLimitExceeded
 from slowapi import _rate_limit_exceeded_handler
@@ -21,7 +22,7 @@ from app.core import security
 from app.database import reset_current_user_id, set_current_user_id
 from app.models.user import User
 from fastapi.middleware.cors import CORSMiddleware
-from jose import JWTError, jwt
+from jose import JWTError
 import time
 import logging
 import uuid
@@ -158,11 +159,22 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(SlowAPIMiddleware)
 
-# P7-E5: cap request bodies. Added LAST so it ends up OUTERMOST in the
-# Starlette middleware stack — it must run before any inner middleware
-# tries to read the body, and before slowapi counts the request against
-# the rate limit. ``max_bytes`` is a callable so the cap can be changed
-# at runtime (env var + reload) without redeploying middleware code.
+# P9-G1: read-only kill switch. Added BEFORE the body cap so the
+# body cap ends up OUTERMOST: a 1 GB DoS payload should still 413,
+# even when read-only mode would have 503'd it. Order matters here:
+# Starlette inserts at position 0, so the most-recently-added
+# middleware is the outermost wrapper.
+app.add_middleware(
+    ReadOnlyModeMiddleware,
+    is_read_only=lambda: bool(settings.read_only),
+)
+
+# P7-E5: cap request bodies. Added LAST (so OUTERMOST) — it must run
+# before any inner middleware tries to read the body, before the
+# kill switch (so 413 wins over 503), and before slowapi counts the
+# request against the rate limit. ``max_bytes`` is a callable so
+# the cap can be changed at runtime (env var + reload) without
+# redeploying middleware code.
 app.add_middleware(
     BodySizeLimitMiddleware,
     max_bytes=lambda: settings.max_request_body_bytes,
@@ -227,19 +239,27 @@ from app.middleware.logging import logging_middleware
 
 @app.middleware("http")
 async def user_context_middleware(request: Request, call_next):
-    """Set request-local user id so DB sessions can apply PostgreSQL RLS."""
+    """Set request-local user id so DB sessions can apply PostgreSQL RLS.
+
+    Phase 3 hardening: routes through ``security.decode_token`` which
+    whitelists ``HS256`` and rejects ``alg=none`` and other surprises.
+    The previous implementation called ``jwt.decode`` directly with
+    ``algorithms=[ALGORITHM]``, which was correct but inconsistent
+    with the rest of the auth path; centralising on one helper means
+    a future algorithm rotation only needs to touch one file.
+    """
     user_id = None
     auth_header = request.headers.get("Authorization")
     if auth_header:
         try:
             scheme, credentials = auth_header.split()
             if scheme.lower() == "bearer":
-                payload = jwt.decode(
-                    credentials,
-                    settings.secret_key,
-                    algorithms=[security.ALGORITHM],
-                )
-                user_id = payload.get("sub")
+                payload = security.decode_token(credentials)
+                # Only access tokens populate request-scoped RLS.
+                # Refresh tokens go through /auth/refresh and never
+                # reach this code path with a valid scheme.
+                if payload.get("type", "access") == "access":
+                    user_id = payload.get("sub")
         except (ValueError, JWTError):
             user_id = None
 
