@@ -44,3 +44,53 @@ class RefreshToken(Base):
     __table_args__ = (
         Index("ix_refresh_tokens_user_id_revoked_at", "user_id", "revoked_at"),
     )
+
+
+
+class EmailVerificationToken(Base):
+    """Single-use token issued when an email user registers (P3-A1).
+
+    The raw token is a high-entropy URL-safe string; only ``sha256(raw)``
+    is persisted. Consumed once: ``consumed_at`` is set when the user
+    hits ``/auth/verify-email/confirm`` with a matching live token.
+    """
+
+    __tablename__ = "email_verification_tokens"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    token_hash = Column(String, unique=True, nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    consumed_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class PasswordResetToken(Base):
+    """Single-use token issued by /auth/password-reset/request (P3-A2).
+
+    Token TTL is short (default 30 minutes). ``ip_address`` and
+    ``user_agent`` are recorded on issue so an operator can spot
+    abuse. Consumption sets ``consumed_at`` and the route handler
+    revokes every refresh token for the user.
+    """
+
+    __tablename__ = "password_reset_tokens"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    token_hash = Column(String, unique=True, nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    consumed_at = Column(DateTime(timezone=True), nullable=True)
+    ip_address = Column(String, nullable=True)
+    user_agent = Column(String, nullable=True)
