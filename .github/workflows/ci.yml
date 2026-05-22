@@ -7,59 +7,120 @@ on:
     branches: [ "main" ]
 
 jobs:
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+      - name: Run credential scanner
+        run: python scripts/scan_secrets.py --ci
+
   lint-and-test:
+    needs: secret-scan
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v3
-    
+
     - name: Set up Python 3.11
       uses: actions/setup-python@v4
       with:
         python-version: "3.11"
         cache: "pip"
-        
+
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
         pip install -r requirements-dev.txt
-        
+
     - name: Lint with flake8
       run: |
+        pip install flake8
         # stop the build if there are Python syntax errors or undefined names
         flake8 app --count --select=E9,F63,F7,F82 --show-source --statistics
         # exit-zero treats all errors as warnings
         flake8 app --count --exit-zero --max-complexity=10 --max-line-length=120 --statistics
-        
-    - name: Type check with mypy
-      run: |
-        mypy app --ignore-missing-imports || true
-        
-    - name: Run tests (demo mode — no DB required)
+
+    - name: Run unit tests (demo mode — no DB required)
       env:
         DEMO_MODE: "true"
-        SECRET_KEY: "ci-test-secret"
+        SECRET_KEY: "ci-test-secret-key-must-be-at-least-32-characters-long"
         OPENAI_API_KEY: "sk-test-placeholder"
       run: |
-        pytest -v --tb=short
-        
+        pytest -v --tb=short -m "not integration"
+
+  integration-tests:
+    needs: lint-and-test
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: nexmem_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Run integration tests
+        env:
+          # Integration tests speak to the service containers above.
+          DEMO_MODE: "false"
+          DATABASE_URL: "postgresql+asyncpg://postgres:postgres@localhost:5432/nexmem_test"
+          REDIS_URL: "redis://localhost:6379/0"
+          SECRET_KEY: "ci-integration-secret-key-at-least-32-characters-long-x"
+          OPENAI_API_KEY: "sk-test-placeholder"
+          ALLOWED_ORIGINS: "http://localhost:3000"
+          ENVIRONMENT: "development"
+          RUN_DB_TESTS: "1"
+        run: |
+          pytest -v --tb=short -m integration
+
   security-audit:
     needs: lint-and-test
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
-    
-    - name: Set up Python 3.11
-      uses: actions/setup-python@v4
-      with:
-        python-version: "3.11"
-        cache: "pip"
-        
-    - name: Install bandit
-      run: pip install bandit==1.7.9
-      
-    - name: Run SAST security audit
-      run: python tests/run_security_audit.py
+      - uses: actions/checkout@v3
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+          cache: "pip"
+      - name: Install bandit
+        run: pip install bandit==1.7.9
+      - name: Run SAST security audit
+        run: python tests/run_security_audit.py
 
   docker-build:
     needs: lint-and-test
@@ -67,10 +128,10 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
     - uses: actions/checkout@v3
-    
+
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v2
-      
+
     - name: Build Docker Image
       uses: docker/build-push-action@v4
       with:
