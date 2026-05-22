@@ -1,10 +1,16 @@
-"""Re-ranking Service - Uses local Cross-Encoder to re-rank retrieval results."""
+"""Re-ranking Service - Uses local Cross-Encoder to re-rank retrieval results.
+
+Phase 2: cross-encoder calls now go through the bounded ``reranker``
+pool in app/core/concurrency.py so concurrent requests cannot spawn
+unbounded executor threads.
+"""
 
 import logging
 from typing import List, Dict, Any, Optional
-import asyncio
+import time
 
 from app.config import settings
+from app.core.concurrency import run_bounded
 
 logger = logging.getLogger(__name__)
 
@@ -18,8 +24,13 @@ def get_reranker():
     if _reranker is None:
         from sentence_transformers import CrossEncoder
 
+        t0 = time.perf_counter()
         logger.info(f"Loading Cross-Encoder model: {MODEL_NAME}")
         _reranker = CrossEncoder(MODEL_NAME)
+        logger.info(
+            "reranker.model_loaded",
+            extra={"model": MODEL_NAME, "load_ms": round((time.perf_counter() - t0) * 1000, 1)},
+        )
     return _reranker
 
 # ==========================================
@@ -61,18 +72,15 @@ async def rerank_results(
         
         pairs.append([query, text[:500]])  # Truncate to 500 chars
     
-    # Get scores from Cross-Encoder (run in executor for async)
+    # Get scores from Cross-Encoder via the bounded reranker pool.
     try:
         reranker = get_reranker()
-        loop = asyncio.get_event_loop()
-        scores = await loop.run_in_executor(
-            None, reranker.predict, pairs
-        )
-        
+        scores = await run_bounded("reranker", reranker.predict, pairs)
+
         # Add scores to results
         for i, r in enumerate(results):
             r["rerank_score"] = float(scores[i]) if i < len(scores) else 0.0
-        
+
         # Sort by rerank_score descending
         results.sort(key=lambda x: x.get("rerank_score", 0.0), reverse=True)
         return results[:top_n]
