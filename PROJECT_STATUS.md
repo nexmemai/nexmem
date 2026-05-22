@@ -136,6 +136,46 @@ call from an async route handler goes through `run_bounded(pool,
 fn, …)` so the executor cannot spawn unbounded threads under burst
 traffic.
 
+### 3.5.1 Production guard-rails (P5/P6/P7/P9 P0 pass)
+* **DB statement timeouts** (P5-C1). Every non-demo asyncpg
+  connection sets `statement_timeout=30s` and
+  `idle_in_transaction_session_timeout=60s` via
+  `connect_args["server_settings"]`, plus an `application_name` so
+  `pg_stat_activity` is readable during incidents. A runaway query
+  no longer pins a Supabase pooler connection forever.
+* **Celery time + memory bounds** (P6-D2 / D3 / D4 / G2 prep).
+  `task_soft_time_limit=240`, `task_time_limit=300` kill hung tasks.
+  `worker_max_tasks_per_child=100` recycles workers so spaCy /
+  sentence-transformers cannot leak unbounded RSS.
+  `result_expires=3600` keeps Redis from filling.
+  `task_acks_late=True` + `worker_prefetch_multiplier=1` give safe
+  rolling deploys (a SIGTERM during a task re-queues it).
+* **Request body cap** (P7-E5). New `BodySizeLimitMiddleware` is
+  outermost in the stack and 413s any request body above
+  `settings.max_request_body_bytes` (default 5 MiB). Both the
+  Content-Length fast path and a streaming/chunked slow path are
+  enforced so an attacker cannot bypass by omitting Content-Length.
+  GET / HEAD / OPTIONS bypass for zero overhead on read traffic.
+* **GDPR routes hardened** (P7-E1, P7-E2).
+  `GET /memory/user/{user_id}/export` now streams NDJSON via a
+  server-side cursor (`yield_per=256`) so a million-episode user
+  no longer OOMs the worker; `Content-Disposition: attachment`
+  makes the response saveable to disk.
+  `DELETE /memory/user/{user_id}/all` runs inside an explicit
+  `async with db.begin():` block so any mid-chain failure rolls
+  back atomically. Both routes now have demo-mode parity.
+* **Read-only kill switch** (P9-G1). `READ_ONLY=true` flips
+  `settings.read_only`; every state-changing route returns 503
+  with `Retry-After: 60` while reads, health/metrics, and session
+  revocation routes (`/auth/logout`, `/auth/logout-all`,
+  `DELETE /auth/sessions/{id}`) continue to flow. Body cap is
+  outer than the kill switch so 413 wins over 503.
+* **JWT alg whitelist in user-context middleware**. The Phase 1
+  middleware called `jwt.decode()` directly with
+  `algorithms=[ALGORITHM]`; this PR routes through
+  `security.decode_token()` so every JWT decode in the codebase
+  shares one whitelisted code path.
+
 ### 3.6 Migrations
 * Alembic chain runs through `alembic/env.py` which acquires
   `pg_try_advisory_lock(728_419_362_001)` before applying any
