@@ -162,12 +162,14 @@ These actions live outside the codebase and must be done by an operator. They ar
 - **What:** `POST /api/v1/episodic/` is wrong; real route is `/api/v1/agents/{user_id}/episodes`. Same for `rag/chat` payload shape.
 - **Risk:** Load tests show 422/404 noise; team is misled into believing the system "handled load."
 - **Mitigation:** Plan §C10. Rewrite to real routes.
+- **Status:** ✅ FIXED. The locustfile now registers a unique user, captures `user_id` from `/auth/me`, and POSTs to `/api/v1/agents/{user_id}/episodes` (real shape: `session_id` + `content`) and `/api/v1/rag/chat` (real shape: full `RAGRequest`). Verified by `tests/test_locustfile_targets_real_routes.py`, which parses every URL out of the locustfile and asserts each is registered on the FastAPI app.
 
 ### R-H13 · Stale assertion in `test_memory.py`
 - **Where:** `tests/test_memory.py:21-26`.
 - **What:** `assert data["service"] == "Decentralized AI Memory Layer"`. Actual root returns `"NexMem - Decentralized AI Memory Layer"`. Even when run with a real DB, this test fails.
 - **Risk:** False sense of test coverage; will mask real regressions when integration CI is enabled.
 - **Mitigation:** Plan §C10. Update assertion.
+- **Status:** ✅ FIXED. Assertion in `tests/integration/test_memory.py` now matches the real service name `"NexMem - Decentralized AI Memory Layer"`.
 
 ---
 

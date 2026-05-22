@@ -24,7 +24,9 @@ async def test_root_endpoint(client: AsyncClient):
     response = await client.get("/")
     assert response.status_code == 200
     data = response.json()
-    assert data["service"] == "Decentralized AI Memory Layer"
+    # The service field includes the product brand. Match the real value
+    # from app/main.py:FastAPI(title=...).
+    assert data["service"] == "NexMem - Decentralized AI Memory Layer"
     assert data["version"] == "0.1.0"
 
 
