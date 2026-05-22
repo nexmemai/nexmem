@@ -31,10 +31,10 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from typing import Any, AsyncIterator, Iterable
+from typing import Any, AsyncIterator, Dict, Iterable
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import delete, select
@@ -42,6 +42,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import demo_db
 from app.config import settings
+from app.core.audit_log import record_gdpr_event
 from app.core.deps import get_current_user
 from app.database import get_db
 from app.models.engram import Engram
@@ -172,6 +173,7 @@ async def _stream_export_demo(user_id: UUID) -> AsyncIterator[bytes]:
 @router.get("/{user_id}/export")
 async def export_all_memories(
     user_id: UUID,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -191,6 +193,11 @@ async def export_all_memories(
     else:
         gen = _stream_export_db(db, user_id)
 
+    # Audit (P10-H1) — record the action *before* we start streaming.
+    # If the helper itself fails we still proceed; the audit helper
+    # already swallows its own exceptions.
+    await record_gdpr_event("export", target_user_id=user_id, request=request)
+
     return StreamingResponse(
         gen,
         media_type="application/x-ndjson",
@@ -208,6 +215,7 @@ async def export_all_memories(
 @router.delete("/{user_id}/all")
 async def delete_all_memories(
     user_id: UUID,
+    request: Request,
     confirm: str | None = Header(None, alias="X-Confirm-Delete"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -233,7 +241,17 @@ async def delete_all_memories(
         )
 
     if settings.demo_mode:
-        return _delete_all_demo(user_id)
+        result = _delete_all_demo(user_id)
+        # P10-H1: audit row written BEFORE the user is wiped from
+        # demo state — otherwise the FK target is gone and the
+        # demo helper would drop the row.
+        await record_gdpr_event(
+            "delete",
+            target_user_id=user_id,
+            request=request,
+            payload={"counts": result.get("deleted_counts", {})},
+        )
+        return result
 
     delete_counts: dict[str, int] = {}
 
@@ -260,12 +278,35 @@ async def delete_all_memories(
         )
         delete_counts["users"] = user_result.rowcount or 0
 
+    # P10-H1: write the audit row only AFTER the transaction
+    # commits successfully. Otherwise we'd record a delete that
+    # might have been rolled back.
+    await _audit_delete(user_id, request, delete_counts)
+
     return {
         "deleted": True,
         "user_id": str(user_id),
         "authentication_invalidated": True,
         "deleted_counts": delete_counts,
     }
+
+
+async def _audit_delete(
+    user_id: UUID, request: Request, counts: Dict[str, int]
+) -> None:
+    """Audit the delete *after* the transaction commits.
+
+    The audit helper opens a fresh session — it cannot piggyback on
+    the (already-committed-and-closed) caller transaction. We call
+    this immediately after commit so a failure here doesn't poison
+    the user-visible response.
+    """
+    await record_gdpr_event(
+        "delete",
+        target_user_id=user_id,
+        request=request,
+        payload={"counts": counts},
+    )
 
 
 def _delete_all_demo(user_id: UUID) -> dict[str, Any]:
@@ -337,6 +378,7 @@ def _delete_all_demo(user_id: UUID) -> dict[str, Any]:
 async def update_consent(
     user_id: UUID,
     flags: ConsentFlags,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -359,6 +401,12 @@ async def update_consent(
             new_settings = dict(proc.get("settings") or {})
             new_settings["consent"] = consent
             proc["settings"] = new_settings
+        await record_gdpr_event(
+            "consent_change",
+            target_user_id=user_id,
+            request=request,
+            payload={"consent": consent},
+        )
         return {"updated": True, "user_id": uid, "consent": consent}
 
     result = await db.execute(
@@ -384,4 +432,10 @@ async def update_consent(
         db.add(procedural)
 
     await db.commit()
+    await record_gdpr_event(
+        "consent_change",
+        target_user_id=user_id,
+        request=request,
+        payload={"consent": consent},
+    )
     return {"updated": True, "user_id": str(user_id), "consent": consent}
