@@ -11,6 +11,7 @@ from sqlalchemy import select
 from app.database import get_db
 from app.config import settings
 from app.core.deps import get_current_user
+from app.core.quotas import enforce_write_quota
 from app.models.user import User
 
 router = APIRouter(prefix="/agents", tags=["associative"])
@@ -39,7 +40,7 @@ class PathRequest(BaseModel):
 # Node Endpoints
 # ==========================================
 
-@router.post("/{user_id}/graph/nodes")
+@router.post("/{user_id}/graph/nodes", dependencies=[Depends(enforce_write_quota)])
 async def create_node(
     user_id: str,
     body: NodeCreateRequest,
@@ -163,7 +164,7 @@ async def delete_node(
 
 # ── Edge Endpoints ─────────────────────────────────────────────────────────────
 
-@router.post("/{user_id}/graph/edges")
+@router.post("/{user_id}/graph/edges", dependencies=[Depends(enforce_write_quota)])
 async def create_edge(
     user_id: str,
     body: EdgeCreateRequest,
