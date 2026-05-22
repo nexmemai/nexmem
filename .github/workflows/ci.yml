@@ -7,9 +7,24 @@ on:
     branches: [ "main" ]
 
 jobs:
+  # ── Repo-wide secret scanner: blocks any commit that reintroduces a leak ──
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 1
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+      - name: Run secret scanner
+        run: python scripts/scan_secrets.py
+
   # ── Fast feedback: lint, type-check, unit tests in demo mode ───────────────
   unit-tests:
     runs-on: ubuntu-latest
+    needs: secret-scan
     steps:
       - uses: actions/checkout@v3
 
