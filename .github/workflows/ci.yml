@@ -131,6 +131,79 @@ jobs:
       - name: Run SAST security audit
         run: python tests/run_security_audit.py
 
+  # P10-H6: dependency vulnerability scan. Blocks the merge on HIGH
+  # or CRITICAL CVEs in our pinned dependencies. ``--strict`` is
+  # explicitly NOT set so the job runs to completion and reports all
+  # findings; ``--vulnerability-service osv`` is faster and more
+  # comprehensive than the deprecated ``pyup`` source.
+  dependency-audit:
+    needs: lint-and-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+          cache: "pip"
+      - name: Install pip-audit
+        run: pip install pip-audit==2.7.3
+      - name: Run pip-audit on production deps
+        # ``-r requirements.txt`` runs against the pinned production
+        # set, NOT the dev tools. A finding here is what would ship
+        # to a customer.
+        run: pip-audit -r requirements.txt --disable-pip --vulnerability-service osv
+
+  # P5-C5: Alembic forward+back round-trip. Runs every migration
+  # ``upgrade head -> downgrade base -> upgrade head`` against a
+  # disposable Postgres so a missing ``downgrade()`` or asymmetric
+  # DDL is caught on the PR rather than during an emergency
+  # rollback.
+  alembic-roundtrip:
+    needs: lint-and-test
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: nexmem_alembic
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+          cache: "pip"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run round-trip
+        env:
+          # Run in non-demo mode so alembic actually targets Postgres.
+          DEMO_MODE: "false"
+          DATABASE_URL: "postgresql+asyncpg://postgres:postgres@localhost:5432/nexmem_alembic"
+          SECRET_KEY: "ci-roundtrip-secret-key-at-least-32-characters-long-x"
+          OPENAI_API_KEY: "sk-test-placeholder"
+          ALLOWED_ORIGINS: "http://localhost:3000"
+          ENVIRONMENT: "development"
+        run: |
+          # Forward.
+          alembic upgrade head
+          # Backward (full chain).
+          alembic downgrade base
+          # Forward again — must succeed without manual cleanup.
+          alembic upgrade head
+
   docker-build:
     needs: lint-and-test
     runs-on: ubuntu-latest
