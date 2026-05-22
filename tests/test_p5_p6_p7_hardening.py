@@ -10,7 +10,6 @@ Runs in DEMO_MODE so no Postgres / Redis is required.
 """
 from __future__ import annotations
 
-import json
 from typing import List
 
 import pytest
