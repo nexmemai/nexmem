@@ -8,6 +8,7 @@ Supports two modes:
 from app.config import settings
 from app.routers import episodic, semantic, procedural, graph, rag, auth, health, memory, apps, gdpr
 from app.core.rate_limit import limiter
+from app.middleware.body_size_limit import BodySizeLimitMiddleware
 from slowapi.middleware import SlowAPIMiddleware
 from slowapi.errors import RateLimitExceeded
 from slowapi import _rate_limit_exceeded_handler
@@ -156,6 +157,16 @@ app = FastAPI(
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(SlowAPIMiddleware)
+
+# P7-E5: cap request bodies. Added LAST so it ends up OUTERMOST in the
+# Starlette middleware stack — it must run before any inner middleware
+# tries to read the body, and before slowapi counts the request against
+# the rate limit. ``max_bytes`` is a callable so the cap can be changed
+# at runtime (env var + reload) without redeploying middleware code.
+app.add_middleware(
+    BodySizeLimitMiddleware,
+    max_bytes=lambda: settings.max_request_body_bytes,
+)
 
 # Task 4.2: Prometheus metrics — instrument only (no auto-expose).
 # Metrics are served via /metrics with token auth — see endpoint below.
