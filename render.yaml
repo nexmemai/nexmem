@@ -4,11 +4,15 @@ services:
     env: python
     plan: free
     buildCommand: "pip install --upgrade pip && pip install -r requirements.txt"
-    startCommand: "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT"
+    # Migrations run via advisory-locked wrapper so multi-replica deploys
+    # cannot race. Web service runs a single uvicorn worker because the
+    # in-process NetworkX graph in app/services/engram_processor.py is not
+    # shared across processes (see BACKEND_RISKS.md R-107).
+    startCommand: "scripts/run_with_migrations.sh uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1"
     healthCheckPath: /health/live
     envVars:
       - key: DATABASE_URL
-        value: postgresql+asyncpg://postgres.***REDACTED_PROJECT_ID***@aws-1-ap-northeast-1.pooler.supabase.com:6543/postgres?sslmode=require
+        sync: false
       - key: REDIS_URL
         fromService:
           type: redis
@@ -41,7 +45,7 @@ services:
     startCommand: "celery -A app.celery_app.celery_app worker --loglevel=info --concurrency=2"
     envVars:
       - key: DATABASE_URL
-        value: postgresql+asyncpg://postgres.***REDACTED_PROJECT_ID***@aws-1-ap-northeast-1.pooler.supabase.com:6543/postgres?sslmode=require
+        sync: false
       - key: REDIS_URL
         fromService:
           type: redis
