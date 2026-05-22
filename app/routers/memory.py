@@ -11,6 +11,7 @@ import logging
 from app.database import get_db
 from app.models.user import User
 from app.core.deps import get_current_user
+from app.core.quota import enforce_write_quota
 from app.services.embedder import embedder
 from app.services.engram_processor import engram_processor, decay_score
 from app.config import settings
@@ -288,7 +289,7 @@ async def get_memory_context(
 @router.post("/episode/write", response_model=EpisodeWriteResponse)
 async def write_episode(
     body: EpisodeWriteRequest,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(enforce_write_quota),
     db: AsyncSession = Depends(get_db),
 ):
     """
