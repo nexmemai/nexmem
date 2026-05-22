@@ -237,6 +237,27 @@ def _user_email_verified(user) -> bool:
     return getattr(user, "email_verified_at", None) is not None
 
 
+def _revoke_request_access_token(request: Request) -> bool:
+    """P3-A5: blocklist the access token attached to this request.
+
+    The middleware in ``app/main.py`` parses the bearer JWT and stashes
+    the payload on ``request.state.access_token_payload``. We use that
+    to find the ``jti`` and the ``exp`` so the Redis blocklist entry
+    expires together with the token. Returns the durability of the
+    revoke (False = Redis unavailable; caller can decide to surface).
+    """
+    from app.core.token_blocklist import revoke
+
+    payload = getattr(request.state, "access_token_payload", None)
+    if not payload:
+        return False
+    jti = payload.get("jti")
+    exp = payload.get("exp")
+    if not jti:
+        return False
+    return revoke(jti, exp=exp)
+
+
 def _generic_token_invalid_exception() -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_400_BAD_REQUEST,
@@ -756,6 +777,7 @@ async def password_reset_confirm(
 @router.post("/change-password", status_code=status.HTTP_200_OK)
 async def change_password(
     body: PasswordChangeRequest,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -764,6 +786,9 @@ async def change_password(
     Requires the *current* password (so a stolen access token alone
     cannot change the password). Revokes every refresh token for the
     user on success — the caller must log in again on every device.
+    P3-A5: also adds the current request's access-token ``jti`` to
+    the Redis blocklist so a stolen access token cannot keep
+    operating until its 4-hour expiry.
     """
     if not current_user.hashed_password:
         raise HTTPException(
@@ -785,16 +810,43 @@ async def change_password(
     if settings.demo_mode:
         demo_auth.update_user_password(current_user.id, new_hash)
         demo_auth.revoke_all_refresh_tokens(current_user.id)
-        return {"status": "ok"}
-
-    await db.execute(
-        update(User)
-        .where(User.id == current_user.id)
-        .values(hashed_password=new_hash)
-    )
-    await db.commit()
-    await _revoke_all_refresh_tokens(db, current_user.id)
+    else:
+        await db.execute(
+            update(User)
+            .where(User.id == current_user.id)
+            .values(hashed_password=new_hash)
+        )
+        await db.commit()
+        await _revoke_all_refresh_tokens(db, current_user.id)
+    _revoke_request_access_token(request)
     return {"status": "ok"}
+
+
+@router.post("/revoke-current-token", status_code=status.HTTP_204_NO_CONTENT)
+async def revoke_current_token(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+):
+    """P3-A5: blocklist this exact access token immediately.
+
+    Useful when the user reports a stolen device or wants to log out
+    of "this browser only" without revoking every refresh token.
+    The TTL of the blocklist entry equals the token's remaining
+    lifetime so the entry expires together with the token.
+    """
+    if not _revoke_request_access_token(request):
+        # Redis unavailable. The blocklist is the only path to
+        # immediate revocation, so we surface a clear 503 rather
+        # than pretending success.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "Token revocation is temporarily unavailable. "
+                "Use /auth/logout-all to revoke every refresh token "
+                "and let the access token expire naturally (max "
+                f"{settings.access_token_expire_hours}h)."
+            ),
+        )
 
 
 # ── /api-keys ────────────────────────────────────────────────────────────────
