@@ -23,6 +23,9 @@ demo_users: dict[str, dict] = {}              # user_id -> user record
 demo_users_by_email: dict[str, str] = {}      # email -> user_id
 demo_api_keys: dict[str, dict] = {}           # api_key_id -> record
 demo_refresh_tokens: dict[str, dict] = {}     # token_hash -> record
+# Phase 3: email-verification + password-reset hashed-token stores.
+demo_email_verification_tokens: dict[str, dict] = {}  # token_hash -> record
+demo_password_reset_tokens: dict[str, dict] = {}      # token_hash -> record
 
 
 def reset_demo_auth() -> None:
@@ -31,6 +34,8 @@ def reset_demo_auth() -> None:
     demo_users_by_email.clear()
     demo_api_keys.clear()
     demo_refresh_tokens.clear()
+    demo_email_verification_tokens.clear()
+    demo_password_reset_tokens.clear()
 
 
 def generate_id() -> str:
