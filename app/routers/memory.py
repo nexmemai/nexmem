@@ -11,6 +11,7 @@ import logging
 from app.database import get_db
 from app.models.user import User
 from app.core.deps import get_current_user
+from app.core.quotas import enforce_read_quota, enforce_write_quota
 from app.services.embedder import embedder
 from app.services.engram_processor import engram_processor, decay_score
 from app.config import settings
@@ -153,7 +154,7 @@ def assemble_context(
     return "\n\n".join(parts) if parts else "[No relevant context found]"
 
 
-@router.post("/context", response_model=ContextResponse)
+@router.post("/context", response_model=ContextResponse, dependencies=[Depends(enforce_read_quota)])
 async def get_memory_context(
     body: ContextRequest,
     current_user: User = Depends(get_current_user),
@@ -285,7 +286,7 @@ async def get_memory_context(
     )
 
 
-@router.post("/episode/write", response_model=EpisodeWriteResponse)
+@router.post("/episode/write", response_model=EpisodeWriteResponse, dependencies=[Depends(enforce_write_quota)])
 async def write_episode(
     body: EpisodeWriteRequest,
     current_user: User = Depends(get_current_user),
