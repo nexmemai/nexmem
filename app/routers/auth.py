@@ -74,6 +74,11 @@ async def _persist_refresh_token(
         demo_auth.add_refresh_token(user_id, token_hash, expires_at)
         return
     user_agent, ip = _client_meta(request)
+    # Apply RLS context to the active session so the INSERT into
+    # refresh_tokens passes the WITH CHECK clause added in 013_extend_rls.
+    from app.database import set_rls_context
+
+    await set_rls_context(db, str(user_id))
     db.add(
         RefreshToken(
             user_id=user_id,
@@ -255,6 +260,10 @@ async def refresh_token(
     if settings.demo_mode:
         user = demo_auth.get_user_by_id(str(user_uuid))
     else:
+        # Without RLS context set, the users_login_lookup policy lets
+        # us read this row by id. After we know who the caller is, we
+        # set the context so subsequent refresh_tokens reads/writes
+        # pass RLS.
         user_q = await db.execute(select(User).where(User.id == user_uuid))
         user = user_q.scalar_one_or_none()
     if user is None or not user.is_active:
@@ -262,6 +271,11 @@ async def refresh_token(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User not found or inactive",
         )
+
+    if not settings.demo_mode:
+        from app.database import set_rls_context as _set_rls
+
+        await _set_rls(db, str(user_uuid))
 
     token_hash = hash_refresh_token(body.refresh_token)
     if settings.demo_mode:

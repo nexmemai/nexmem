@@ -19,7 +19,7 @@ def _base_kwargs(**overrides):
         demo_mode=False,
         database_url="postgresql+asyncpg://user:pw@localhost:5432/db",
         secret_key="x" * 64,
-        openai_api_key="sk-real-key-xyzxyzxyzxyzxyzxyzxyzxyzxyzxyz123456",
+        openai_api_key="sk-test-realistic-shape-xyzxyzxyzxyzxyzxyzxyz123456",
         allowed_origins=["https://nexmem.example.com"],
         redis_url="redis://localhost:6379/0",
     )
