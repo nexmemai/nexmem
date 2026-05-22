@@ -22,6 +22,9 @@ class User(Base):
     tier = Column(String, default="free", nullable=False)  # free, starter, pro, enterprise
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
     total_tokens_used = Column(Integer, default=0, nullable=False)
+    # Phase 3 (P3-A1): set when the user confirms their email. Login is
+    # gated on this column when EMAIL_VERIFICATION_REQUIRED=true.
+    email_verified_at = Column(DateTime(timezone=True), nullable=True)
 
 
 class APIKey(Base):
