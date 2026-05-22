@@ -19,7 +19,7 @@ from app.models.memory import (
     KnowledgeNode,
 )
 from app.config import settings
-from app.services.embedder import get_nlp_semaphore
+from app.core.concurrency import run_bounded
 
 logger = logging.getLogger(__name__)
 
@@ -132,13 +132,10 @@ async def extract_entities_and_actions(
     content: str,
     engram_processor,
 ) -> Dict[str, Any]:
-    """Async wrapper for NLP extraction with semaphore."""
-    loop = asyncio.get_event_loop()
-    sem = get_nlp_semaphore()
-    async with sem:
-        return await loop.run_in_executor(
-            None, extract_entities_and_actions_sync, content, engram_processor
-        )
+    """Async wrapper for NLP extraction under the bounded nlp pool."""
+    return await run_bounded(
+        "nlp", extract_entities_and_actions_sync, content, engram_processor
+    )
 
 
 async def create_semantic_from_episode(
