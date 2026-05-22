@@ -169,3 +169,91 @@ first user traffic:
    reachable, and that `REDIS_URL` is wired into the web service.
 5. Run migrations exactly once via the documented release flow before
    bringing up replicas.
+
+
+
+---
+
+## 8. Outcome (filled in at end of Phase 2)
+
+This section is the post-mortem. It is filled in only after all
+ten steps have shipped, and is the primary thing reviewers should
+read when evaluating "is this ready for first user traffic?".
+
+### 8.1 Summary of changes
+
+| Step | Title | Notable artefacts |
+|------|-------|-------------------|
+| P2-S0 | Planning + risk register | `BACKEND_HARDENING_PHASE2.md`, `BACKEND_RISKS.md` |
+| P2-S1 | Secret hygiene | `scripts/scan_secrets.py`, `scripts/run_with_migrations.sh`, fixed `alembic/env.py`, scrubbed three operator scripts, `render.yaml` -> `sync: false` |
+| P2-S2 | Auth + sessions | `app/models/auth.py::RefreshToken`, migration 012, `app/core/demo_auth.py`, `app/core/security.py::decode_token`, `/auth/logout`, `/auth/logout-all`, refresh rotation + replay rejection, validate_production now raises |
+| P2-S3 | RLS + app scope | `docs/APP_SCOPING.md`, migration 013 (RLS on api_keys / refresh_tokens / token_usage / users), removed `current_user.app_id` AttributeError path |
+| P2-S4 | Transactional writes | `/memory/episode/write` precomputes NLP outside the DB transaction and rolls back atomically on any failure |
+| P2-S5 | Bounded concurrency | `app/core/concurrency.py` with embedder/nlp/reranker pools, all heavy callers refactored, Sentry conservative sampling + scrubbing |
+| P2-S6 | Migration + deployment safety | `CONTRIBUTING.md`, Redis-aware `/health/ready`, advisory-lock wrapper |
+| P2-S7 | Observability | New `app/middleware/logging.py` with `request_id` / `user_id` / `app_id` / `latency_ms`, PII redaction tested |
+| P2-S8 | Quota enforcement | `app/core/quotas.py` with write + read caps, wired into all targeted routes |
+| P2-S9 | Test suite quality | pytest-cov in CI, unit-isolation sentinel test, marker discipline |
+| P2-S10 | Docs truth pass | rewrote `PROJECT_STATUS.md` and `PRODUCTION_READINESS_PLAN.md` |
+
+### 8.2 Test counts
+
+| | Before Phase 2 | After Phase 2 |
+|---|---|---|
+| Unit tests passing | 0 (the test baseline could not load — `Settings` rejected the test env) | 75 |
+| LLM-dependent tests skipping cleanly | 33 | 33 |
+| Slow tests deselected by default | 0 | 5 |
+| Integration tests | 0 | 1 (rollback semantics, real Postgres) |
+| CI jobs | 3 | 5 (`secret-scan`, `lint-and-test`, `integration-tests`, `security-audit`, `docker-build`) |
+
+### 8.3 BACKEND_RISKS.md — remaining items
+
+The risk register has been kept current throughout Phase 2. After
+this PR, the unresolved items are:
+
+* **R-101** — RLS coverage is comprehensive on user-scoped tables;
+  any new user-scoped table must add a policy in the same migration.
+* **R-102** — Refresh tokens are revocable. Access tokens are
+  short-lived (4h) but not blocklisted. Acceptable for beta.
+* **R-107** — NetworkX graph is per-process; web service pinned to
+  `--workers 1`.
+* **R-201** — Operator must rewrite git history to purge Phase 1's
+  leaked password from older commits. CI scanner blocks new leaks.
+* **R-203** — App is request-scoped, not a first-class model.
+* **R-204** — No live load test yet.
+* **R-205** — Migration 007 is destructive and already run; do not
+  re-run.
+
+### 8.4 Operator actions still required
+
+See `PRODUCTION_READINESS_PLAN.md §Operator action still required`.
+The five items are: history rewrite, Render-side DATABASE_URL set,
+REDIS_URL verification, run migration 013, rotate SECRET_KEY.
+
+### 8.5 Go / no-go recommendation
+
+**Go for first private-beta traffic, conditional on the five
+operator actions above being completed.**
+
+The backend has:
+* No hardcoded secrets in the working tree, with CI guarding the
+  state.
+* Production startup that refuses to run insecure config.
+* Real, tested session revocation.
+* App-scoping consistency with no AttributeError path.
+* Atomic multi-step writes with no orphan-row class of bug.
+* Bounded concurrency on every CPU-heavy async path.
+* Migration race eliminated by Postgres advisory lock.
+* Structured JSON logs with request id, user id, app id, and PII
+  redaction tested.
+* Both write and read quotas wired and tested.
+* CI gating that catches regressions for every item above.
+
+The remaining risks are documented (`BACKEND_RISKS.md`) and the
+operator's pre-launch runbook is concrete
+(`docs/INCIDENT_RUNBOOK.md`, `PRODUCTION_READINESS_PLAN.md`).
+
+### 8.6 Suggested PR title
+
+`Phase 2 backend hardening: secrets, sessions, RLS, transactional
+writes, async safety, quota enforcement, structured logs, docs truth`
