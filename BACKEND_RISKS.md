@@ -74,12 +74,18 @@ These actions live outside the codebase and must be done by an operator. They ar
 - **What:** Conftest forces `DEMO_MODE=true`. The `auth.register` endpoint never branches on demo mode — it tries to query and write to the real DB. Empirically: running `pytest` with `DEMO_MODE=true` and a fake `DATABASE_URL` produces 8 failures, 5 errors, 33 skipped, 13 passed (verified live by the reviewer).
 - **Why critical:** The "zero-dependency test suite" claim in `PROJECT_STATUS.md` is false. CI today gives no real signal beyond import-time linting.
 - **Mitigation:** Plan §C7. Either short-circuit auth.* in demo mode, or — preferred — replace demo-mode CI with a real Postgres service.
+- **Status:** ✅ FIXED. Both fixes shipped. (a) Auth router endpoints now branch on `settings.demo_mode`: register/login/refresh return synthetic UserResponse + JWT; create/list/delete API keys are no-ops or return synthetic responses. (b) Real-behavior tests that need a live DB (auth, isolation, concurrent writes, memory context, engram processor) were moved to `tests/integration/` and are gated by `RUN_DB_TESTS=1`. Email TLD `@nexmem.test` (rejected by email-validator) replaced with `@example.com`. Conftest's autouse demo-store reset is a no-op when not in demo mode.
 
 ### R-C8 · CI test job has no security signal
 - **Where:** `.github/workflows/ci.yml:30-40`.
 - **What:** CI only runs `pytest` in demo mode against in-memory dicts. `RUN_DB_TESTS=1` and `RUN_ML_TESTS=1` are never set. Auth, RLS, migrations, and pgvector are not exercised.
 - **Why critical:** Regressions to auth/RLS land silently. `bandit --severity-level high` is the only real security gate.
 - **Mitigation:** Plan §C8/§C9. Add Postgres + Redis service containers, run gated tests.
+- **Status:** ✅ FIXED. CI workflow now has three jobs: (1) `unit-tests` runs lint + mypy + pytest in demo mode (55 unit tests). (2) `integration-tests` runs against `pgvector/pgvector:pg16` + `redis:7-alpine` service containers, applies Alembic migrations to head, and runs `pytest tests/integration/` with `RUN_DB_TESTS=1`. (3) `security-audit` runs bandit. (4) `docker-build` runs only on main pushes. The `integration-tests` job exercises:
+  - `tests/integration/test_auth_real_db.py` — registration persistence, duplicate-email rejection, login success/failure, refresh-token round-trip, API-key lifecycle (create/list/use/revoke), me endpoint via Bearer and ApiKey schemes.
+  - `tests/integration/test_rls_isolation.py` — cross-tenant list isolation, 403 on cross-user URL access, 403 on cross-user delete, raw-SQL probe of RLS policy with mismatched `app.current_user_id` GUC returns zero rows.
+  - `tests/integration/test_quota_real_redis.py` — free-tier 429 with structured payload, distinct counters per user.
+  - `tests/integration/test_migrations.py` — `alembic upgrade head` lands at the expected version, RLS is enabled+forced on all six memory tables, migration 007 is idempotent on the already-correct schema (no rows deleted on re-run).
 
 ---
 

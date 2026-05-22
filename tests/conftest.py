@@ -1,26 +1,41 @@
-"""
-Shared test fixtures for the entire Nexmem test suite.
+"""Top-level test fixtures.
 
-Strategy: run every test against the app in DEMO_MODE=true.
-This uses the existing in-memory stores (demo_db.py) as a database substitute,
-so the full test suite runs without a live PostgreSQL instance.
+Strategy:
+  - The default test environment is `DEMO_MODE=true`. Most tests at this
+    level are unit / demo-mode tests that use the in-memory stores in
+    `app.demo_db` instead of a database.
+  - Tests under `tests/integration/` opt out of demo mode by setting
+    `DEMO_MODE=false` (along with `RUN_DB_TESTS=1`) before they import the
+    app, and they have their own conftest that boots a real DB session.
+  - We do NOT force `DEMO_MODE=true` here unless the env var is unset,
+    so an integration run that explicitly sets `DEMO_MODE=false` is
+    respected.
 """
-import os
-import pytest
+
 import asyncio
+import os
+import uuid
+from typing import AsyncGenerator, Generator
 
-# ── Force demo mode before the app module is ever imported ───────────────────
+import pytest
+
+# Set demo-mode + safe placeholders BEFORE importing the app, but only when
+# they are not already set by the test environment (e.g., by the integration
+# CI job).
 os.environ.setdefault("DEMO_MODE", "true")
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-ci-only")
 os.environ.setdefault("OPENAI_API_KEY", "sk-test-placeholder")
+os.environ.setdefault(
+    "DATABASE_URL",
+    "postgresql+asyncpg://placeholder:placeholder@127.0.0.1:1/placeholder",
+)
+os.environ.setdefault("ENVIRONMENT", "development")
 
-from typing import AsyncGenerator, Generator
-from httpx import AsyncClient, ASGITransport
+from httpx import ASGITransport, AsyncClient  # noqa: E402
 
-
-# ── Import AFTER env vars are set ────────────────────────────────────────────
-from app.main import app
-from app import demo_db
+from app import demo_db  # noqa: E402
+from app.config import settings  # noqa: E402
+from app.main import app  # noqa: E402
 
 
 # ── Event loop ───────────────────────────────────────────────────────────────
@@ -33,10 +48,10 @@ def event_loop() -> Generator:
     loop.close()
 
 
-# ── HTTP client ───────────────────────────────────────────────────────────────
+# ── HTTP client ──────────────────────────────────────────────────────────────
 @pytest.fixture
 async def client() -> AsyncGenerator[AsyncClient, None]:
-    """Async HTTP test client wired to the demo-mode FastAPI app."""
+    """Async HTTP test client wired to the FastAPI app."""
     async with AsyncClient(
         transport=ASGITransport(app=app),
         base_url="http://testserver",
@@ -44,20 +59,20 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
         yield c
 
 
-# ── Demo-store reset between tests ───────────────────────────────────────────
+# ── Demo-store reset between tests ──────────────────────────────────────────
 @pytest.fixture(autouse=True)
 def reset_demo_stores():
-    """
-    Clear all in-memory demo stores before each test so that tests are fully
-    isolated from one another.
-    """
+    """Clear in-memory demo stores between tests (no-op when not in demo mode)."""
+    if not settings.demo_mode:
+        yield
+        return
+
     demo_db.episodic_store.clear()
     demo_db.semantic_store.clear()
     demo_db.procedural_store.clear()
     demo_db.graph_nodes_store.clear()
     demo_db.graph_edges_store.clear()
     yield
-    # Optionally clear again on teardown
     demo_db.episodic_store.clear()
     demo_db.semantic_store.clear()
     demo_db.procedural_store.clear()
@@ -65,16 +80,16 @@ def reset_demo_stores():
     demo_db.graph_edges_store.clear()
 
 
-# ── Auth helper ───────────────────────────────────────────────────────────────
+# ── Auth helper ──────────────────────────────────────────────────────────────
 @pytest.fixture
 async def auth_headers(client: AsyncClient) -> dict:
+    """Register a unique user and return a Bearer-token auth header.
+
+    Uses `@example.com` (an IANA example TLD) instead of `.test` because
+    pydantic's email-validator rejects `.test` as a special-use TLD.
     """
-    Register a unique user and return a valid Bearer-token auth header.
-    Works entirely through the demo-mode auth flow (no DB needed).
-    """
-    import uuid
     unique = uuid.uuid4().hex[:8]
-    creds = {"email": f"test_{unique}@nexmem.test", "password": "TestPass123!"}
+    creds = {"email": f"test_{unique}@example.com", "password": "TestPass123!"}
 
     reg = await client.post("/api/v1/auth/register", json=creds)
     assert reg.status_code in (200, 201), f"Registration failed: {reg.text}"
@@ -88,7 +103,7 @@ async def auth_headers(client: AsyncClient) -> dict:
 
 @pytest.fixture
 async def demo_user_id(client: AsyncClient, auth_headers: dict) -> str:
-    """Return the user_id of the currently authenticated demo user."""
+    """Return the user_id of the currently authenticated user."""
     me = await client.get("/api/v1/auth/me", headers=auth_headers)
     assert me.status_code == 200
     return me.json()["id"]
