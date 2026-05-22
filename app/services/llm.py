@@ -37,6 +37,11 @@ def track_token_usage(
 
     async def _insert():
         async with async_session() as session:
+            # Apply RLS context so the INSERT passes the policy added in
+            # 013_extend_rls (token_usage_user_isolation).
+            from app.database import set_rls_context
+
+            await set_rls_context(session, str(user_id))
             usage = TokenUsage(
                 id=uuid.uuid4(),
                 user_id=uuid.UUID(user_id),

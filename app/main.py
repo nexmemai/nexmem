@@ -35,16 +35,41 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan — runs on startup and shutdown."""
+    """Application lifespan — runs on startup and shutdown.
+
+    Phase 2 (R-106, R-107):
+    * validate_production() RAISES on insecure config so the process
+      dies at boot instead of silently running insecure.
+    * The web service is configured to run with --workers 1 in
+      render.yaml because the in-process NetworkX graph is not shared
+      across workers. If the worker count is bumped without making
+      that state shared, requests will get inconsistent graph views.
+    """
     settings.validate_production()
-    
-    # Task 4.3: Initialize Sentry if DSN is provided
+
     if settings.sentry_dsn:
+        # Conservative trace + profile sampling for beta. PII is
+        # scrubbed in before_send below.
+        def _scrub(event, hint):
+            req = event.get("request") or {}
+            headers = req.get("headers") or {}
+            for h in list(headers):
+                if h.lower() in ("authorization", "cookie", "set-cookie", "x-api-key"):
+                    headers[h] = "[redacted]"
+            data = req.get("data")
+            if isinstance(data, dict):
+                for k in list(data):
+                    if k.lower() in ("password", "refresh_token", "access_token", "api_key"):
+                        data[k] = "[redacted]"
+            return event
+
         sentry_sdk.init(
             dsn=settings.sentry_dsn,
-            traces_sample_rate=1.0,
-            profiles_sample_rate=1.0,
-            environment=settings.environment
+            traces_sample_rate=settings.sentry_traces_sample_rate,
+            profiles_sample_rate=settings.sentry_profiles_sample_rate,
+            environment=settings.environment,
+            send_default_pii=False,
+            before_send=_scrub,
         )
         logger.info("Sentry integration initialized.")
     if settings.demo_mode:
