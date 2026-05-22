@@ -43,11 +43,17 @@ async def lifespan(app: FastAPI):
     if settings.sentry_dsn:
         sentry_sdk.init(
             dsn=settings.sentry_dsn,
-            traces_sample_rate=1.0,
-            profiles_sample_rate=1.0,
-            environment=settings.environment
+            traces_sample_rate=settings.sentry_traces_sample_rate,
+            profiles_sample_rate=settings.sentry_profiles_sample_rate,
+            environment=settings.environment,
+            release="nexmem@0.1.0",
         )
-        logger.info("Sentry integration initialized.")
+        logger.info(
+            "Sentry initialised: traces=%.2f profiles=%.2f env=%s",
+            settings.sentry_traces_sample_rate,
+            settings.sentry_profiles_sample_rate,
+            settings.environment,
+        )
     if settings.demo_mode:
         print("=" * 60)
         print("AI Memory Layer - DEMO MODE")

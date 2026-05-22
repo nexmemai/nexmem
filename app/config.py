@@ -89,6 +89,14 @@ class Settings(BaseSettings):
     sentry_dsn: Optional[str] = None
     metrics_secret_key: Optional[str] = None
 
+    # Sentry sample rates (R-H9). The Phase-1 code hard-coded both at 1.0
+    # which would have generated very high event volume under any traffic.
+    # Defaults are conservative for private beta:
+    #   - traces: 10 % of requests get a performance trace
+    #   - profiles: 0 % (off; turn on per-incident if needed)
+    sentry_traces_sample_rate: float = 0.1
+    sentry_profiles_sample_rate: float = 0.0
+
     # ── CORS ───────────────────────────────────────────────────────────────────
     allowed_origins: Union[str, List[str]] = ["*"]
 
