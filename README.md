@@ -2,6 +2,13 @@
 
 A persistent, cross-platform memory system for AI agents and LLMs, structured like human cognition into 4 memory types.
 
+> **For investors / engineers reviewing the codebase:** read these in order.
+> - [`PROJECT_STATUS.md`](./PROJECT_STATUS.md) — feature-by-feature status (✅ / 🟡 / ❌).
+> - [`PRODUCTION_READINESS_PLAN.md`](./PRODUCTION_READINESS_PLAN.md) — what is and is not ready.
+> - [`BACKEND_RISKS.md`](./BACKEND_RISKS.md) — running risk register.
+> - [`BACKEND_HARDENING_PHASE2.md`](./BACKEND_HARDENING_PHASE2.md) — what the in-flight backend hardening covers.
+> - [`docs/SECRET_INCIDENT_RUNBOOK.md`](./docs/SECRET_INCIDENT_RUNBOOK.md) — credential-rotation playbook.
+
 ## Architecture
 
 ```
@@ -27,7 +34,7 @@ A persistent, cross-platform memory system for AI agents and LLMs, structured li
 │                    PostgreSQL + pgvector (Supabase)                      │
 │  ┌─────────────────┐ ┌────────────────┐ ┌──────────────┐ ┌──────────┐  │
 │  │ episodic_memory │ │semantic_memory │ │procedural_mem │ │knowledge │  │
-│  │ (hypertable)    │ │(VECTOR(1536))  │ │    (JSONB)   │ │  _graph  │  │
+│  │ (RLS, FTS)      │ │(VECTOR(384))   │ │    (JSONB)   │ │  _graph  │  │
 │  └─────────────────┘ └────────────────┘ └──────────────┘ └──────────┘  │
 └─────────────────────────────────────────────────────────────────────────┘
 ```

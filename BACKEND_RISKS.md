@@ -96,66 +96,77 @@ These actions live outside the codebase and must be done by an operator. They ar
 - **What:** Episodic insert → semantic insert → engram process → engram insert → graph nodes → graph edges. Each block has its own try/except; on partial failure, the prior commits stand. There is no enclosing transaction or savepoint.
 - **Risk:** Inconsistent state; "I wrote it but it's not in the engram." Hard to support.
 - **Mitigation:** Wrap in a single async transaction; rollback on any failure.
+- **Status:** ✅ FIXED in P2-C2 (`backend/hardening-phase2`). `write_episode` now (a) computes embedding + engram before any DB write — those failures raise 502/503 with no DB state — and (b) issues every DB INSERT with no swallowing try/except, so any failure inside the transactional phase propagates and `get_db` rolls back the whole write. Verified by `tests/test_episode_write_atomicity.py` (5 tests covering source-contract guard, embedder failure, engram failure, mid-flight DB failure on semantic, mid-flight DB failure on engram) and `tests/integration/test_episode_write_atomicity_real_db.py` (live-DB rollback proof + happy-path control).
 
 ### R-H2 · `current_user.app_id` AttributeError in `rag.py`
 - **Where:** `app/routers/rag.py:153, 232`.
 - **What:** `logger.info("llm_token_usage", app_id=current_user.app_id, ...)`. The `User` model has no `app_id` attribute. This crashes the request with `AttributeError` once `logger.info` runs in production mode.
 - **Risk:** Every production `/rag/chat` call after the LLM responds returns a 500. *Unverified end-to-end* (might be silently swallowed by log-level filtering, but the code path exists).
 - **Mitigation:** Replace with `getattr(current_user, "app_id", None)` or remove the field; track app id from request, not user.
+- **Status:** ✅ FIXED in P2-C3. Both call sites now log `app_id=request.app_id`. The decision documented in BACKEND_HARDENING_PHASE2.md §P2-C3 is that app scope flows from the request body / API key context only; the User model is and remains app-agnostic. A whole-tree source guard (`tests/test_app_scope_consistency.py::test_no_router_references_user_app_id`) blocks the regression.
 
 ### R-H3 · API-key auth bypasses the JWT-only RLS middleware
 - **Where:** `app/main.py:200-216` (middleware only decodes Bearer JWT).
 - **What:** `user_context_middleware` only sets `app.current_user_id` for `Bearer` tokens. API-key requests fall through. RLS GUC is later set by `set_rls_context` inside `get_current_user`, so behavior is correct in practice — but the dependency on call ordering is fragile.
 - **Risk:** A future refactor that runs DB queries before `get_current_user` (e.g., a router-level dependency that opens a session early) will leak data because the GUC is unset, RLS predicate is `user_id = NULL`, which fails closed for reads but **also** for writes — surfaces as silent zero-rows.
 - **Mitigation:** Decode API-key auth in the same middleware so the RLS GUC is set unconditionally. Add an integration test that runs a query in a router pre-dependency.
+- **Status:** 🟡 PARTIAL (P2-C4 / P2-C5). `deps.get_current_user` was reordered so the api_keys.last_used_at UPDATE happens AFTER `set_rls_context`, eliminating the silent-update path. The fragility around running queries pre-`get_current_user` remains as a guard-rail concern; adding API-key decode to the middleware is deferred to Phase 3 because the new RLS policies on `api_keys` use `USING (true)` for SELECT (read-by-key_hash works without GUC).
 
 ### R-H4 · `apps.register_app` accepts request body via query string
 - **Where:** `app/routers/apps.py:24-31`.
 - **What:** `app_name: str` and `description: Optional[str]` are unvalidated query params on a `POST`. Clients sending JSON bodies get 422 unless they also send the params in the URL.
 - **Risk:** Breaks clients; reduces security review confidence.
 - **Mitigation:** Add `RegisterAppRequest(BaseModel)` and accept in body.
+- **Status:** ⏳ NOT FIXED. Carried into Phase 3 as part of the broader app-registry rework (the current scope-string-on-API-key model is itself transitional). Out of scope for Phase 2 because it touches public API contract for the `apps` resource.
 
 ### R-H5 · Engrams have no `app_id` and no FK to `users`
 - **Where:** `app/models/engram.py`.
 - **What:** `engrams` rows are scoped only by `user_id`; no `app_id`. RLS is enabled (m008) but multi-app scoping is leaky for engrams.
 - **Risk:** A multi-app customer's engrams from one app are visible to queries scoped to another app.
 - **Mitigation:** Add `app_id` column + index + RLS predicate update. Migration plus model change. (Defer to high-priority backlog because it requires a backfill plan.)
+- **Status:** ✅ FIXED (column part) in P2-C3. Migration `012_add_app_id_to_engrams` adds the column with a (user_id, app_id) index, idempotent on re-run; existing rows backfill to NULL (user-scoped). `app/models/engram.py` carries the new field. `write_episode` threads `body.app_id` into the engram INSERT. The FK-to-users half stays open under R-H6.
 
 ### R-H6 · No FKs from memory tables to `users`
 - **Where:** `app/models/memory.py`. `user_id` is a UUID column with no `ForeignKey`.
 - **What:** Deleting a user (admin path, RLS-bypassed) leaves orphaned rows.
 - **Risk:** GDPR delete relies on hand-coded `DELETE` calls. Future admin tooling will leak orphan data.
 - **Mitigation:** Add FKs in a migration with `ON DELETE CASCADE`.
+- **Status:** ⏳ NOT FIXED. Out of scope for Phase 2: adding cascading FKs to existing tables with millions of rows requires a backfill / lock plan that this hardening pass intentionally avoided. Tracked for Phase 3.
 
 ### R-H7 · RLS missing on `users`, `api_keys`, `token_usage`
 - **Where:** `alembic/versions/008_enable_memory_rls.py` covers memory tables only.
 - **What:** A buggy code path that connects without `app.current_user_id` gets full read/write to all users, all keys, and all usage.
 - **Risk:** Information disclosure; horizontal escalation if an SSRF or SQLi ever lands.
 - **Mitigation:** Add RLS policies on these tables in a new migration; service-role usage must explicitly bypass.
+- **Status:** ✅ FIXED in P2-C4. Migration `013_rls_users_apikeys_tokenusage` enables FORCE RLS on all three tables with the threat-model trade-offs documented in the migration: SELECT on `users` and `api_keys` is permissive (login + key-hash lookup are pre-auth), but INSERT (api_keys) and UPDATE / DELETE (all three) are self-only. `token_usage` is fully self-only. `deps.get_current_user` was reordered so the `api_keys.last_used_at` UPDATE happens after the RLS GUC is set. Verified by `tests/integration/test_rls_users_apikeys_tokenusage.py` (4 cross-user mutation attempts, all blocked).
 
 ### R-H8 · `_generate_demo_reply` masks LLM outages
 - **Where:** `app/routers/rag.py:25-71`.
 - **What:** Any LLM error returns a hardcoded string ("Hello! I'm your AI assistant…").
 - **Risk:** A customer cannot distinguish a real outage from real content. Silent failure mode.
 - **Mitigation:** Surface a structured 503; remove the fake reply.
+- **Status:** ⏳ NOT FIXED. Deferred from Phase 2 by the founder brief (out-of-scope items list in BACKEND_HARDENING_PHASE2.md).
 
 ### R-H9 · Sentry sample rates set to 1.0
 - **Where:** `app/main.py:39-44`.
 - **What:** `traces_sample_rate=1.0`, `profiles_sample_rate=1.0`. Cost-bomb under traffic.
 - **Risk:** Bill shock + Sentry quota exhaustion drops error events.
 - **Mitigation:** Lower to `0.1 / 0.0` in production.
+- **Status:** ✅ FIXED in P2-C8. `Settings.sentry_traces_sample_rate` defaults to 0.1 and `Settings.sentry_profiles_sample_rate` defaults to 0.0; both are env-overridable. `app/main.py` reads from settings instead of hard-coding 1.0. Verified by `tests/test_observability.py::test_sentry_sample_rates_have_conservative_defaults` and `..._overridable_via_env`.
 
 ### R-H10 · Migration runs on container start, no migration lock
 - **Where:** `Dockerfile` / `render.yaml:11`.
 - **What:** `alembic upgrade head && uvicorn …`. Multiple replicas race the migration runner.
 - **Risk:** Concurrent migration crashes; partial schema state.
 - **Mitigation:** Move migrations to a release/init job; use Postgres advisory lock if migrations must run in start path.
+- **Status:** ✅ FIXED in P2-C6. New `scripts/run_migrations.py` takes a session-level Postgres advisory lock with a fixed 64-bit key, runs `alembic upgrade head`, and releases the lock in a `finally` block. Dockerfile and `render.yaml` start commands now invoke the script. Source-contract test `tests/test_run_migrations_lock.py` (5 tests) guards lock-then-upgrade-then-unlock ordering, single-key invariant, and presence in both deployment configs.
 
 ### R-H11 · No revocation for refresh tokens
 - **Where:** `app/core/security.py`, `app/routers/auth.py:refresh_token`.
 - **What:** Refresh tokens are JWTs. Compromised refresh token is valid until `exp` (7 days) unless `SECRET_KEY` rotates.
 - **Risk:** Stolen refresh token = persistent foothold.
 - **Mitigation:** Add a server-side denylist or kid-rotation. (Not blocker for private beta if we accept the risk and document it; reclassify to MEDIUM if we explicitly accept.)
+- **Status:** ✅ FIXED in P2-C5. Migration `014_refresh_tokens` adds a `refresh_tokens` table with FORCE RLS (user-scoped). `create_refresh_token` returns `(token, jti, expires_at)` and embeds the jti in the JWT. The `/auth/refresh` endpoint validates the jti, rejects revoked / expired / mismatched tokens, and rotates (revoke old, mint new). New endpoints `/auth/logout` (revoke one) and `/auth/logout-all` (revoke every active session) are wired in. Pre-014 tokens (no jti) are explicitly rejected. Verified by `tests/test_refresh_token_security.py` (4 unit tests) and `tests/integration/test_refresh_token_revocation.py` (6 live-DB tests). Access tokens remain valid until their `exp` (default 4 h); this trade-off is documented in `PROJECT_STATUS.md` "Known limitations".
 
 ### R-H12 · Locust file targets non-existent routes
 - **Where:** `tests/locustfile.py:54-63`.
@@ -186,12 +197,14 @@ These actions live outside the codebase and must be done by an operator. They ar
 - **What:** Serializes spaCy + embedder + cross-encoder across the whole process.
 - **Risk:** Throughput cliff; a single slow request blocks all others.
 - **Mitigation:** Bound to CPU count; profile.
+- **Status:** 🟡 PARTIAL (P2-C7). The single-slot serialisation remains (deliberately, to keep CPU pressure bounded on small Render instances), but cold-load is no longer paid on the request-thread: `LazyEmbedder._get` and `LazyEngramProcessor._get` now load constructors via `loop.run_in_executor` and `warmup()` is exposed for the lifespan to pre-warm at startup. Semaphore-cap tuning is a Phase 3 follow-up that requires real load-test data.
 
 ### R-M3 · Cold-start lazy model loading on the request thread
 - **Where:** `engram_processor.LazyEngramProcessor.process_async`.
 - **What:** First request loads ~230 MB of models on the request path.
 - **Risk:** Multi-second p99 spike after every deploy / scale-up.
 - **Mitigation:** Pre-warm in lifespan; pre-bake models into Docker image.
+- **Status:** ✅ FIXED in P2-C7. New `WARM_MODELS_AT_STARTUP` setting (defaults False, set to true in `render.yaml` for the production web service). When enabled, the lifespan kicks off background warmup tasks for both the embedder and the engram processor immediately after port binding. Both lazy loaders log a single `warmup_complete` event with elapsed_ms so cold-start cost is observable. Verified by `tests/test_lazy_loaders.py` (singleton guarantee under 20 concurrent first-callers, idempotent warmup, structured timing log).
 
 ### R-M4 · Hand-paste SQL files drift from Alembic
 - **Where:** `apply_migrations_supabase.sql`, `run_in_supabase_sql_editor.sql`, `verify_migrations.sql`, `supabase_migration_sql.sql`.
@@ -229,6 +242,7 @@ These actions live outside the codebase and must be done by an operator. They ar
 - **Where:** `app/main.py:39-44`, `_instrumentator = Instrumentator().instrument(app)`.
 - **Risk:** Looks instrumented; might not surface anywhere. *Unverified.*
 - **Mitigation:** Manual smoke after a deploy; out of scope for code-only PR.
+- **Status:** 🟡 PARTIAL (P2-C8). The per-request structlog event ("http_request" with request_id / method / path / route / status_code / latency_ms / user_id / app_id) is unit-tested. The redactor is unit-tested. Sentry sample-rate config and release tag is wired. End-to-end Sentry + Prometheus smoke after a deploy is still an operator step (no code change can verify it).
 
 ### R-M11 · Health `/ready` does not check Redis
 - **Where:** `app/routers/health.py`.
