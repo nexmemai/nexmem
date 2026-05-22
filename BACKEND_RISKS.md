@@ -60,6 +60,7 @@ These actions live outside the codebase and must be done by an operator. They ar
 - **What:** `op.execute("DELETE FROM semantic_memory")` runs on every `upgrade()`, with no guard. Re-running migrations on a populated DB silently destroys all semantic memory rows.
 - **Why critical:** Deploys, restores, and DR drills all run `alembic upgrade head`. Any operator running migrations against a populated DB that is mid-chain (e.g., recovered from a backup at revision 006) will lose data.
 - **Mitigation:** Plan §C5. Detect dim, skip when 384, gate destructive path behind `ALLOW_DESTRUCTIVE_MIGRATION=1`.
+- **Status:** ✅ FIXED. The migration now reads `pg_attribute.atttypmod` to detect the current vector dimension. When already 384, the DELETE is skipped entirely (only the index/default are realigned, idempotently). When the dim differs, it raises `RuntimeError` reporting both dimensions and the row count to be destroyed, and refuses to proceed without `ALLOW_DESTRUCTIVE_MIGRATION=1`. The downgrade path has the same gate. Verified by `tests/test_migration_007_safety.py` (6 tests: textual contract, idempotent 384-already path, refusal without consent, execution with consent, downgrade-no-op, downgrade-without-consent).
 
 ### R-C6 · Quotas not enforced
 - **Where:** `app/core/rate_limit_redis.py:38-100` (`check_quota` defined). `grep -r 'check_quota' app/` returns only the definition. No router calls it.
