@@ -4,13 +4,14 @@ import logging
 from typing import List, Dict, Any, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 
 from app.database import get_db
 from app.config import settings
 from app.core.deps import get_current_user
+from app.core.rate_limit import limiter
 from app.models.user import User
 from app.services.app_registry import (
     register_app as reg_app,
@@ -23,8 +24,20 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/apps", tags=["app-management"])
 
 
+def _exempt_in_demo() -> bool:
+    """slowapi ``exempt_when`` for /apps/register.
+
+    Demo mode (test suite, local dev) is exempted so unit tests that
+    create many apps in a row are not throttled. Production runs
+    without ``DEMO_MODE`` so the cap applies.
+    """
+    return bool(settings.demo_mode)
+
+
 @router.post("/register", response_model=Dict[str, Any])
+@limiter.limit(settings.app_register_rate_limit, exempt_when=_exempt_in_demo)
 async def register_app(
+    request: Request,
     app_name: str,
     description: Optional[str] = "",
     current_user: User = Depends(get_current_user),
@@ -32,7 +45,11 @@ async def register_app(
 ):
     """
     Register a new app for the authenticated user.
-    
+
+    Rate-limited per IP (P4-B3) at ``settings.app_register_rate_limit``
+    (default ``10/hour``); exempt in demo mode so test suites can
+    create many apps without tripping the cap.
+
     Returns:
         - app_id: The unique app identifier
         - api_key: The API key to use (shown only once!)
@@ -40,7 +57,7 @@ async def register_app(
     """
     if not app_name or len(app_name.strip()) == 0:
         raise HTTPException(status_code=400, detail="app_name is required")
-    
+
     try:
         result = await reg_app(
             db, str(current_user.id), app_name.strip(), description or ""
