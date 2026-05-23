@@ -20,7 +20,12 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, Depends, HTTPException
 from app.core.deps import get_current_user
 from app.core import security
-from app.database import reset_current_user_id, set_current_user_id
+from app.database import (
+    reset_current_user_id,
+    set_current_user_id,
+    reset_current_app_id,
+    set_current_app_id,
+)
 from app.models.user import User
 from fastapi.middleware.cors import CORSMiddleware
 from jose import JWTError
@@ -225,6 +230,16 @@ async def rebuild_networkx_graph() -> None:
                 text("SELECT set_config('app.current_user_id', :uid, true)"),
                 {"uid": str(user_id)},
             )
+            # Phase 4 / Amendment 1 — set NULL app context for the
+            # startup graph rebuild. Edges are user-scoped today; the
+            # NULL app id makes migration-019 policy see all rows
+            # regardless of app_id (NULL-app_id rows are universally
+            # visible; non-NULL rows still match because we are only
+            # filtering by user_id below).
+            await session.execute(
+                text("SELECT set_config('app.current_app_id', :aid, true)"),
+                {"aid": ""},
+            )
             result = await session.execute(
                 select(KnowledgeEdge, SourceNode, TargetNode)
                 .join(SourceNode, KnowledgeEdge.from_node_id == SourceNode.id)
@@ -285,11 +300,21 @@ async def user_context_middleware(request: Request, call_next):
             user_id = None
 
     request.state.current_user_id = user_id
-    token = set_current_user_id(user_id)
+    # Phase 4 / Amendment 1 — JWT auth does NOT carry an app binding
+    # today, so the contextvar stays None here. The API-key auth path
+    # in app/core/deps.py overwrites this on request.state when it
+    # resolves an api_keys row with a non-NULL app_id. Setting None
+    # here is the safe default: migration-019 policy treats NULL
+    # current_app_id as "show NULL-app_id rows", which is the legacy
+    # behaviour for users who never adopted multi-app scoping.
+    request.state.current_app_id = None
+    user_token = set_current_user_id(user_id)
+    app_token = set_current_app_id(None)
     try:
         return await call_next(request)
     finally:
-        reset_current_user_id(token)
+        reset_current_app_id(app_token)
+        reset_current_user_id(user_token)
 
 
 @app.middleware("http")
