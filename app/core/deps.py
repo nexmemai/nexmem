@@ -56,6 +56,7 @@ async def get_current_user(
         )
 
     user: Optional[User] = None
+    app_id_from_key: Optional[str] = None  # P4-B4 / Amendment 1: from api_keys.app_id
 
     if scheme.lower() == "apikey":
         key_hash = hashlib.sha256(credentials.encode()).hexdigest()
@@ -79,6 +80,9 @@ async def get_current_user(
                 created_at=demo_user.created_at,
                 email_verified_at=demo_user.email_verified_at,
             )
+            # Demo store does not persist app_id today; leave None so
+            # the RLS policy sees the legacy "no app context" behaviour.
+            app_id_from_key = getattr(api_key, "app_id", None)
         else:
             result = await db.execute(select(APIKey).where(APIKey.key_hash == key_hash))
             api_key_obj = result.scalar_one_or_none()
@@ -87,6 +91,12 @@ async def get_current_user(
                     status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key"
                 )
             api_key_obj.last_used_at = datetime.utcnow()
+            # Phase 4 / Amendment 1: capture the app binding (may be NULL
+            # for keys not yet rotated to first-class apps). Propagated
+            # below to request.state.current_app_id and to set_rls_context.
+            app_id_from_key = (
+                str(api_key_obj.app_id) if api_key_obj.app_id is not None else None
+            )
             result = await db.execute(select(User).where(User.id == api_key_obj.user_id))
             user = result.scalar_one_or_none()
 
@@ -155,6 +165,12 @@ async def get_current_user(
         )
 
     request.state.current_user_id = str(user.id)
+    # Phase 4 / Amendment 1: stash app_id on request state so get_db
+    # can pass it to set_rls_context. Only the API-key auth path
+    # populates this today; the JWT path leaves it None which yields
+    # the documented "rows with NULL app_id are visible regardless of
+    # current_app_id" behaviour from migration 019.
+    request.state.current_app_id = app_id_from_key
     if not settings.demo_mode:
-        await set_rls_context(db, str(user.id))
+        await set_rls_context(db, str(user.id), app_id_from_key)
     return user

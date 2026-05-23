@@ -1,5 +1,6 @@
 """Knowledge graph (associative memory) API endpoints."""
 
+import logging
 import uuid
 from collections import deque
 from typing import Optional
@@ -13,6 +14,8 @@ from app.config import settings
 from app.core.deps import get_current_user
 from app.core.quotas import enforce_write_quota
 from app.models.user import User
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/agents", tags=["associative"])
 
@@ -187,7 +190,9 @@ async def create_edge(
                 body.relation, body.weight, body.metadata,
             )
         except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
+            # P7-E9: do not echo internal exception text to the client.
+            logger.info("demo create_edge rejected: %s", e)
+            raise HTTPException(status_code=400, detail="Invalid edge request")
 
     from app.models.memory import KnowledgeNode
     from app.services.consolidation import persist_edge
