@@ -1,6 +1,6 @@
 """Routers package — export all API routers."""
 
-from app.routers import episodic, semantic, procedural, graph, rag, auth, health, memory, gdpr
+from app.routers import episodic, semantic, procedural, graph, rag, auth, health, memory, gdpr, totp
 
 __all__ = [
     "episodic",
@@ -12,4 +12,5 @@ __all__ = [
     "health",
     "memory",
     "gdpr",
+    "totp",
 ]

@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 import structlog
@@ -349,3 +350,181 @@ def consolidate_all_users(self):
             error_type=type(exc).__name__,
         )
         raise self.retry(exc=exc, countdown=300)
+
+
+
+
+# ── P7-E4 (Block 5): execute scheduled GDPR soft-deletes ─────────────────────
+@celery_app.task(
+    bind=True,
+    max_retries=3,
+    default_retry_delay=300,
+    name="app.tasks.execute_scheduled_deletions",
+)
+def execute_scheduled_deletions(self):
+    """Hard-delete every user whose grace period has elapsed.
+
+    Pairs with ``DELETE /memory/user/{id}/all`` (P7-E4): that route
+    only stamps ``deletion_scheduled_for``; this task does the real
+    cascade. Should be run daily by Celery Beat (the schedule entry
+    is left for the operator to add — wiring it on by default would
+    surprise existing deployments).
+
+    Per the spec: the ``users`` row itself is NOT dropped — only
+    every user-scoped memory row + every API key. ``is_active`` is
+    left at False so the email cannot be re-used to create a
+    second account with the same identity. This is the simpler
+    "tombstone" shape; a full row-delete + email scrub can come in
+    a follow-up if the operator decides the metadata residue is a
+    privacy concern.
+
+    Demo-mode short-circuit: the in-memory store is per-test, so
+    nothing to clean up. Read-only mode also skips: hard-deletes
+    are state-changing and a read-only window must not run them.
+
+    The task logs only the ``user_id`` and per-table rowcounts —
+    never the email — so the GDPR-deleted user is not re-identified
+    by the deletion log itself.
+    """
+    task_id = self.request.id
+    task_name = self.name
+    started_at = time.monotonic()
+
+    _log_task_event(
+        "task_start",
+        task_id=task_id,
+        task_name=task_name,
+    )
+
+    def _elapsed_ms() -> int:
+        return int((time.monotonic() - started_at) * 1000)
+
+    if settings.demo_mode:
+        _log_task_event(
+            "task_end",
+            task_id=task_id,
+            task_name=task_name,
+            duration_ms=_elapsed_ms(),
+            outcome="skipped",
+            reason="demo_mode",
+        )
+        return {"skipped": "demo_mode"}
+
+    if settings.read_only:
+        logger.warning(
+            "execute_scheduled_deletions: skipped — service is in READ_ONLY mode"
+        )
+        _log_task_event(
+            "task_end",
+            task_id=task_id,
+            task_name=task_name,
+            duration_ms=_elapsed_ms(),
+            outcome="skipped",
+            reason="read_only",
+        )
+        return {"skipped": "read_only"}
+
+    async def _run() -> dict:
+        from sqlalchemy import delete, select, update
+
+        from app.database import set_rls_context
+        from app.models.engram import Engram
+        from app.models.memory import (
+            EpisodicMemory,
+            KnowledgeEdge,
+            KnowledgeNode,
+            ProceduralMemory,
+            SemanticMemory,
+        )
+        from app.models.user import APIKey, User
+
+        # Same FK-respecting order used by the old immediate-delete
+        # path (children before parents) so a future ON DELETE
+        # RESTRICT cannot trip the cascade.
+        delete_order = (
+            Engram,
+            SemanticMemory,
+            EpisodicMemory,
+            ProceduralMemory,
+            KnowledgeEdge,
+            KnowledgeNode,
+        )
+
+        users_processed = 0
+        async with async_session() as db:
+            # No RLS context here: the lookup runs under the
+            # ``users_login_lookup`` policy (migration 013) which
+            # permits SELECT when ``app.current_user_id`` is NULL.
+            now = datetime.now(timezone.utc)
+            res = await db.execute(
+                select(User.id).where(
+                    User.deletion_scheduled_for.is_not(None),
+                    User.deletion_scheduled_for <= now,
+                )
+            )
+            user_ids = [str(uid) for uid in res.scalars().all()]
+
+            for uid in user_ids:
+                # Each user is a separate transaction so a single
+                # failure does not block the rest of the batch.
+                try:
+                    await set_rls_context(db, uid)
+                    counts: dict[str, int] = {}
+                    async with db.begin():
+                        for model in delete_order:
+                            r = await db.execute(
+                                delete(model).where(model.user_id == uid)
+                            )
+                            counts[model.__tablename__] = r.rowcount or 0
+                        r = await db.execute(
+                            delete(APIKey).where(APIKey.user_id == uid)
+                        )
+                        counts["api_keys"] = r.rowcount or 0
+                        # Tombstone shape: keep the users row but
+                        # lock it out permanently and clear the
+                        # deletion-scheduled marker so the next
+                        # task run does not re-process this user.
+                        await db.execute(
+                            update(User)
+                            .where(User.id == uid)
+                            .values(
+                                is_active=False,
+                                deletion_scheduled_for=None,
+                            )
+                        )
+                    logger.info(
+                        "execute_scheduled_deletions: user_id=%s counts=%s",
+                        uid,
+                        counts,
+                    )
+                    users_processed += 1
+                except Exception as exc:  # noqa: BLE001
+                    logger.error(
+                        "execute_scheduled_deletions: failed for user_id=%s: %s",
+                        uid,
+                        exc,
+                    )
+        return {"users_processed": users_processed}
+
+    try:
+        outcome = async_to_sync(_run)()
+        _log_task_event(
+            "task_end",
+            task_id=task_id,
+            task_name=task_name,
+            duration_ms=_elapsed_ms(),
+            outcome="success",
+            users_processed=outcome.get("users_processed", 0),
+        )
+        return outcome
+    except Exception as exc:
+        logger.error("execute_scheduled_deletions: top-level failure: %s", exc)
+        _log_task_event(
+            "task_end",
+            task_id=task_id,
+            task_name=task_name,
+            duration_ms=_elapsed_ms(),
+            outcome="retry",
+            error_type=type(exc).__name__,
+        )
+        raise self.retry(exc=exc, countdown=600)

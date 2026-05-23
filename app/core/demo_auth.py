@@ -31,6 +31,12 @@ class DemoUser:
     created_at: datetime = field(default_factory=datetime.utcnow)
     total_tokens_used: int = 0
     email_verified_at: Optional[datetime] = None
+    # P3-A6 (Block 5): TOTP / 2FA state.
+    totp_secret: Optional[str] = None
+    totp_enabled: bool = False
+    # P7-E4 (Block 5): GDPR soft-delete grace-period state.
+    deletion_requested_at: Optional[datetime] = None
+    deletion_scheduled_for: Optional[datetime] = None
 
 
 @dataclass
@@ -85,6 +91,12 @@ def create_user(
         "created_at": datetime.utcnow(),
         "total_tokens_used": 0,
         "email_verified_at": None,
+        # P3-A6 / P7-E4 (Block 5): every demo user starts with TOTP off
+        # and no pending deletion, mirroring the production default.
+        "totp_secret": None,
+        "totp_enabled": False,
+        "deletion_requested_at": None,
+        "deletion_scheduled_for": None,
     }
     demo_db.demo_users[str(new_id)] = record
     if email:
@@ -104,6 +116,73 @@ def mark_email_verified(user_id: uuid.UUID, when: Optional[datetime] = None) -> 
     rec = demo_db.demo_users.get(str(user_id))
     if rec is not None:
         rec["email_verified_at"] = when or datetime.utcnow()
+
+
+# ── P3-A6: TOTP / 2FA (Block 5) ──────────────────────────────────────────────
+def set_totp_secret(user_id: uuid.UUID, secret: Optional[str]) -> None:
+    """Store the candidate TOTP secret. ``totp_enabled`` stays False
+    until ``enable_totp`` flips it after a successful verify."""
+    rec = demo_db.demo_users.get(str(user_id))
+    if rec is not None:
+        rec["totp_secret"] = secret
+
+
+def enable_totp(user_id: uuid.UUID) -> None:
+    """Mark TOTP enabled for the user. Called after a successful verify."""
+    rec = demo_db.demo_users.get(str(user_id))
+    if rec is not None:
+        rec["totp_enabled"] = True
+
+
+def disable_totp(user_id: uuid.UUID) -> None:
+    """Disable TOTP and wipe the stored secret (P3-A6 disable flow)."""
+    rec = demo_db.demo_users.get(str(user_id))
+    if rec is not None:
+        rec["totp_enabled"] = False
+        rec["totp_secret"] = None
+
+
+# ── P7-E4: GDPR soft-delete grace period (Block 5) ───────────────────────────
+def request_deletion(
+    user_id: uuid.UUID,
+    requested_at: datetime,
+    scheduled_for: datetime,
+) -> None:
+    """Stamp the user as pending-delete and deactivate them.
+
+    Mirrors the production UPDATE in ``DELETE /memory/user/{id}/all``:
+    the row stays, every memory row stays, but the user is marked
+    inactive so ``get_current_user`` returns 401 immediately.
+    """
+    rec = demo_db.demo_users.get(str(user_id))
+    if rec is not None:
+        rec["deletion_requested_at"] = requested_at
+        rec["deletion_scheduled_for"] = scheduled_for
+        rec["is_active"] = False
+
+
+def cancel_deletion(user_id: uuid.UUID) -> None:
+    """Clear pending-delete state and reactivate the user (P7-E4 cancel)."""
+    rec = demo_db.demo_users.get(str(user_id))
+    if rec is not None:
+        rec["deletion_requested_at"] = None
+        rec["deletion_scheduled_for"] = None
+        rec["is_active"] = True
+
+
+def list_users_pending_deletion(now: datetime) -> list[DemoUser]:
+    """Return demo users whose grace period has elapsed.
+
+    Used by the demo-mode short-circuit in
+    ``execute_scheduled_deletions`` so the task is testable without
+    Celery beat.
+    """
+    out: list[DemoUser] = []
+    for rec in demo_db.demo_users.values():
+        sched = rec.get("deletion_scheduled_for")
+        if sched is not None and sched <= now:
+            out.append(_coerce_user(rec))
+    return out
 
 
 # ── API keys ─────────────────────────────────────────────────────────────────

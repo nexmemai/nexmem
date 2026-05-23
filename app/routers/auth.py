@@ -42,6 +42,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi.responses import JSONResponse
 from jose import JWTError
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -533,6 +534,31 @@ async def login(
         )
 
     await clear_failures(credentials.email)
+
+    # P3-A6 (Block 5): if the user has TOTP enabled, do NOT mint a
+    # full token pair yet. Instead return a short-lived
+    # ``totp_session_token`` the client must trade in via
+    # /auth/totp/complete-login alongside a valid 6-digit code. The
+    # access token surface is unchanged for users who have not
+    # enrolled in TOTP, so this is fully backwards-compatible.
+    if getattr(user, "totp_enabled", False):
+        from app.core.security import create_totp_session_token
+
+        totp_token = create_totp_session_token(str(user.id))
+        await record_auth_event(
+            "login_totp_required",
+            target_user_id=user.id,
+            request=request,
+        )
+        return JSONResponse(
+            status_code=status.HTTP_200_OK,
+            content={
+                "requires_totp": True,
+                "totp_session_token": totp_token,
+                "expires_in": 300,
+            },
+        )
+
     access, refresh = _issue_token_pair(user.id)
     await _persist_refresh_token(db, user.id, refresh, request)
     await record_auth_event(
