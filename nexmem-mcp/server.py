@@ -222,7 +222,7 @@ async def nexmem_search(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the NexMem MCP server")
-    parser.add_argument("--api-key", required=True, help="NexMem API key, e.g. mem_xxxxx")
+    parser.add_argument("--api-key", required=True, help="NexMem API key, e.g. nxm_xxxxx")
     parser.add_argument(
         "--base-url",
         default=DEFAULT_BASE_URL,

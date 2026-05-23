@@ -696,7 +696,7 @@ function Testimonials() {
 function APISection() {
   const wc = `from nexmem import MemoryClient
 
-client = MemoryClient(api_key="mem_xxx")
+client = MemoryClient(api_key="nxm_xxx")
 
 await client.remember(
     "User prefers Python over JS, "

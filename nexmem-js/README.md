@@ -13,7 +13,7 @@ npm install nexmem-js
 ```ts
 import { MemoryClient } from "nexmem-js";
 
-const client = new MemoryClient({ apiKey: "mem_your_key_here" });
+const client = new MemoryClient({ apiKey: "nxm_your_key_here" });
 
 await client.remember("User prefers TypeScript for frontend work.");
 
@@ -25,7 +25,7 @@ console.log(context.memories.content);
 
 ```ts
 const client = new MemoryClient({
-  apiKey: "mem_your_key_here",
+  apiKey: "nxm_your_key_here",
   baseUrl: "https://nexmem-api.onrender.com",
 });
 
