@@ -96,11 +96,6 @@ The user's instruction was "exactly these sections" (1, 2, 3). This footer is **
 
 ### Discrepancies the future session must reconcile
 
-- **Rule #15 vs codebase.** Section 2 rule #15 says the API key prefix is `nxm_`. The current canonical-stack code in `app/core/security.py` generates `"mem_" + secrets.token_urlsafe(32)` (verified at write time with `grep`). Treat this as **UNVERIFIED** until the user clarifies one of:
-  - "`mem_` is legacy, migrate to `nxm_`" → write a migration + grace-period rotation.
-  - "`mem_` is correct, rule #15 is a typo" → update the bootstrap file's rule #15.
-  Do not pick on your own.
-
 - **Section 3 format truncation.** The user's prompt for Section 3 was cut after "Format:" by an embedded steering-message footer. The table format used here is Kiro's best guess. If the user later supplies a different format, replace the section in a follow-on commit on a fresh branch — do not amend this commit.
 
 ### Sandbox limitations encountered in the original Block 1 / Block 2 sessions (relevant to test posture in CI vs locally)
