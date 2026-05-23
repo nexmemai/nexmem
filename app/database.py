@@ -33,6 +33,22 @@ current_user_id: ContextVar[Optional[str]] = ContextVar(
     "current_user_id", default=None
 )
 
+# Per-request app id used by Phase 4 (P4-B4) app-level RLS policies on
+# the 5 memory tables (migration 019). The companion contextvar to
+# ``current_user_id``. Not all auth paths populate it:
+#   * API-key auth populates it from ``api_keys.app_id`` if non-NULL.
+#   * Bearer JWT auth currently leaves it None (tokens do not carry
+#     app_id; binding a JWT to an app is a future change).
+#   * Celery tasks default it to None — single-user-scope writes still
+#     work because the migration-019 policy treats NULL ``app_id`` rows
+#     as visible to any current_app_id (including NULL).
+# The set_config translation is "" -> NULL via the
+# ``NULLIF(current_setting(..., true), '')::uuid`` wrapper used by
+# every relevant policy.
+current_app_id: ContextVar[Optional[str]] = ContextVar(
+    "current_app_id", default=None
+)
+
 
 def _build_engine_kwargs() -> dict:
     """Engine kwargs depend on whether we are in demo mode.
@@ -99,13 +115,46 @@ def reset_current_user_id(token) -> None:
     current_user_id.reset(token)
 
 
-async def set_rls_context(session: AsyncSession, user_id: Optional[str]) -> None:
-    """Apply the RLS user id to the current database transaction."""
+def set_current_app_id(app_id: Optional[str]):
+    """Set request-local app id used by Phase 4 (P4-B4) RLS policies.
+
+    Mirrors ``set_current_user_id``. Returns the contextvar token so
+    the caller can reset it later.
+    """
+    return current_app_id.set(str(app_id) if app_id else None)
+
+
+def reset_current_app_id(token) -> None:
+    """Reset request-local app id context."""
+    current_app_id.reset(token)
+
+
+async def set_rls_context(
+    session: AsyncSession,
+    user_id: Optional[str],
+    app_id: Optional[str] = None,
+) -> None:
+    """Apply RLS context to the current database transaction.
+
+    Sets ``app.current_user_id`` and ``app.current_app_id`` so the
+    migration-008 / 013 / 019 policies see the right identity for this
+    request. Empty string (rather than NULL) is intentional: the
+    policies wrap each setting in ``NULLIF(current_setting(...), '')``
+    which converts "" to NULL — that yields the documented
+    "NULL app_id rows are visible regardless of current_app_id" behaviour.
+    """
     if not user_id:
         return
     await session.execute(
         text("SELECT set_config('app.current_user_id', :uid, true)"),
         {"uid": str(user_id)},
+    )
+    # Phase 4 (P4-B4) — wire app.current_app_id immediately after
+    # current_user_id, every time. Empty string is the documented
+    # "NULL app_id" sentinel for the migration-019 policy.
+    await session.execute(
+        text("SELECT set_config('app.current_app_id', :aid, true)"),
+        {"aid": str(app_id) if app_id else ""},
     )
 
 
@@ -119,6 +168,14 @@ def set_rls_context_on_begin(session, transaction, connection) -> None:
         text("SELECT set_config('app.current_user_id', :uid, true)"),
         {"uid": str(user_id)},
     )
+    # Phase 4 (P4-B4) — wire app.current_app_id immediately after
+    # current_user_id. The contextvar may be None for JWT auth and
+    # Celery tasks; "" sentinel resolves to NULL via NULLIF in policy.
+    app_id = current_app_id.get()
+    connection.execute(
+        text("SELECT set_config('app.current_app_id', :aid, true)"),
+        {"aid": str(app_id) if app_id else ""},
+    )
 
 
 async_session = async_sessionmaker(
@@ -131,19 +188,20 @@ async_session = async_sessionmaker(
 async def get_db(request: Request = None) -> AsyncSession:
     """Dependency for FastAPI routes to get a database session.
 
-    Honors the per-request user id set by the HTTP middleware so RLS
-    policies see the right identity for every query. In demo mode the
-    session is created but never connects (every router branches on
-    ``settings.demo_mode`` before issuing SQL), so we skip the RLS
-    SELECT that would otherwise try to talk to the placeholder URL.
+    Honors the per-request user id and app id set by the HTTP
+    middleware so RLS policies see the right identity for every query.
+    In demo mode the session is created but never connects (every
+    router branches on ``settings.demo_mode`` before issuing SQL), so
+    we skip the RLS SELECT that would otherwise try to talk to the
+    placeholder URL.
     """
     async with async_session() as session:
         try:
             if not settings.demo_mode:
-                user_id = getattr(
-                    getattr(request, "state", None), "current_user_id", None
-                )
-                await set_rls_context(session, user_id)
+                req_state = getattr(request, "state", None)
+                user_id = getattr(req_state, "current_user_id", None)
+                app_id = getattr(req_state, "current_app_id", None)
+                await set_rls_context(session, user_id, app_id)
             yield session
             if not settings.demo_mode:
                 await session.commit()

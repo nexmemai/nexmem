@@ -41,7 +41,7 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from jose import JWTError
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -459,8 +459,10 @@ async def verify_email_resend(
 
 # ── /login ───────────────────────────────────────────────────────────────────
 @router.post("/login", response_model=TokenResponse)
+@limiter.limit(settings.login_rate_limit, exempt_when=_exempt_register_in_demo)
 async def login(
     request: Request,
+    response: Response,
     credentials: UserLogin,
     db: AsyncSession = Depends(get_db),
 ):
