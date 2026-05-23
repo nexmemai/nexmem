@@ -191,11 +191,26 @@ class Settings(BaseSettings):
     db_statement_timeout_ms: int = 30_000
     db_idle_in_transaction_timeout_ms: int = 60_000
 
-    # Pool sizing (P5-C2 documentation; safe to override per deploy).
-    # See render.yaml: workers × pool_size × replicas must stay below the
-    # Supabase pooler max_client_conn (default 200 on Pro tier).
+    # ── Pool sizing (P5-C2) — env-tunable ─────────────────────────────────────
+    # The Render free / hobby tier runs one worker per replica. The Supabase
+    # free tier permits 20 max client connections. Default sizing below:
+    #   Render free tier: 1 worker, Supabase free: 20 max connections.
+    #   Pool size 5 + max overflow 10 = 15 max per worker.
+    #   Leave 5 for admin/migrations. Total = 20. Safe.
+    # Override via env vars when scaling up: ``DB_POOL_SIZE``,
+    # ``DB_MAX_OVERFLOW``, ``DB_POOL_TIMEOUT``, ``DB_POOL_RECYCLE``.
     db_pool_size: int = 5
-    db_max_overflow: int = 5
+    db_max_overflow: int = 10
+    # ``db_pool_timeout`` (s): how long a coroutine waits for a free pool slot
+    # before raising ``TimeoutError``. 30s aligns with the per-statement
+    # timeout so a single stuck query cannot starve every concurrent request
+    # for longer than the statement budget plus the wait.
+    db_pool_timeout: int = 30
+    # ``db_pool_recycle`` (s): SQLAlchemy will close + replace any pooled
+    # connection idle for longer than this. 3600s (1 h) is below Supabase's
+    # default ``idle_session_timeout`` so we never receive a "server closed
+    # the connection unexpectedly" error from a stale connection.
+    db_pool_recycle: int = 3600
 
     # ── Celery hardening (P6-D1 / D2 / D3 / D4 / D5) ───────────────────────────
     # ``celery_task_soft_time_limit`` raises ``SoftTimeLimitExceeded`` inside
@@ -245,6 +260,25 @@ class Settings(BaseSettings):
     # can tune via the ``GRACEFUL_SHUTDOWN_TIMEOUT`` env var (e.g.
     # set to 10s in dev, 60s for long-running RAG calls in prod).
     graceful_shutdown_timeout: int = 30
+
+    # ── OpenTelemetry distributed tracing (P8-F1) ──────────────────────────────
+    # When ``otel_exporter_otlp_endpoint`` is unset (the default),
+    # tracing is **disabled** and no opentelemetry packages need to be
+    # importable at runtime. The lifespan startup logs the disabled
+    # status so the operator can confirm the wiring is intentional.
+    #
+    # When set (e.g. ``OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317``),
+    # the lifespan instruments FastAPI, SQLAlchemy, and Redis with the
+    # OTLP gRPC exporter. The instrumentation is process-global, so it
+    # cannot be safely undone after startup — uninstrumenting requires
+    # a process restart.
+    #
+    # ``otel_service_name`` populates the ``service.name`` resource
+    # attribute on every emitted span. Defaults to ``nexmem``; override
+    # per environment (``nexmem-staging``, ``nexmem-prod``) to keep
+    # spans separable in the collector backend.
+    otel_exporter_otlp_endpoint: Optional[str] = None
+    otel_service_name: str = "nexmem"
 
     # ── Circuit breaker (P6-D7) ────────────────────────────────────────────────
     # Trips after N consecutive failures in W seconds and stays open
