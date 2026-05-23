@@ -68,7 +68,7 @@ authenticated identity. See `docs/APP_SCOPING.md` for the rule and
   `revoked_at` column. `/auth/refresh` rotates the token and rejects
   replays. `/auth/logout` revokes the current session.
   `/auth/logout-all` revokes every session.
-* API keys — `mem_<urlsafe-base64>` form, stored as SHA-256 hashes,
+* API keys — `nxm_<urlsafe-base64>` form, stored as SHA-256 hashes,
   looked up with `secrets.compare_digest`. `DELETE /auth/api-keys/{id}`
   hard-deletes so a leaked key stops working immediately.
 * Brute-force lockout on login: 5 failures within 10 minutes locks

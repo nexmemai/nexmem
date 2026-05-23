@@ -5,13 +5,13 @@ MCP server for NexMem long-term memory tools.
 ## Run
 
 ```bash
-uvx nexmem-mcp --api-key mem_xxxxx --base-url https://nexmem-api.onrender.com
+uvx nexmem-mcp --api-key nxm_xxxxx --base-url https://nexmem-api.onrender.com
 ```
 
 The package also exposes a compatibility command:
 
 ```bash
-uvx mnemo-mcp --api-key mem_xxxxx
+uvx mnemo-mcp --api-key nxm_xxxxx
 ```
 
 ## Cursor / Claude Desktop
@@ -21,7 +21,7 @@ uvx mnemo-mcp --api-key mem_xxxxx
   "mcpServers": {
     "mnemo": {
       "command": "uvx",
-      "args": ["nexmem-mcp", "--api-key", "mem_xxxxx"]
+      "args": ["nexmem-mcp", "--api-key", "nxm_xxxxx"]
     }
   }
 }

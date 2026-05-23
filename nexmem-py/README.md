@@ -19,7 +19,7 @@ pip install -e .
 ```python
 from nexmem import MemoryClient
 
-client = MemoryClient(api_key="mem_your_key_here")
+client = MemoryClient(api_key="nxm_your_key_here")
 
 await client.remember("User prefers Python over JavaScript for backend.")
 
@@ -34,7 +34,7 @@ Using an async context manager:
 ```python
 from nexmem import MemoryClient
 
-async with MemoryClient(api_key="mem_your_key_here") as client:
+async with MemoryClient(api_key="nxm_your_key_here") as client:
     await client.remember("User prefers short, direct technical answers.")
     context = await client.recall("how should I answer this user?")
     print(context.content)
@@ -45,7 +45,7 @@ async with MemoryClient(api_key="mem_your_key_here") as client:
 ```python
 from nexmem import SyncMemoryClient
 
-with SyncMemoryClient(api_key="mem_your_key_here") as client:
+with SyncMemoryClient(api_key="nxm_your_key_here") as client:
     client.remember("User prefers Python for backend work.")
     context = client.recall("what backend language does the user prefer?")
     print(context.memories.content)

@@ -37,7 +37,7 @@ async def test_remember_posts_episode_write():
         })
 
     transport = httpx.MockTransport(handler)
-    async with MemoryClient("mem_test", "https://api.test", transport=transport) as client:
+    async with MemoryClient("nxm_test", "https://api.test", transport=transport) as client:
         episode = await client.remember(
             "User prefers Python.",
             app_id="app_1",
@@ -68,7 +68,7 @@ async def test_recall_returns_context_model():
         })
 
     transport = httpx.MockTransport(handler)
-    async with MemoryClient("mem_test", "https://api.test", transport=transport) as client:
+    async with MemoryClient("nxm_test", "https://api.test", transport=transport) as client:
         context = await client.recall("language preference?", limit=3)
 
     assert context.content == "User prefers Python."
@@ -89,7 +89,7 @@ async def test_export_fetches_authenticated_user_then_export():
         raise AssertionError(request.url.path)
 
     transport = httpx.MockTransport(handler)
-    async with MemoryClient("mem_test", "https://api.test", transport=transport) as client:
+    async with MemoryClient("nxm_test", "https://api.test", transport=transport) as client:
         data = await client.export()
 
     assert data["user_id"] == "user_1"
@@ -98,7 +98,7 @@ async def test_export_fetches_authenticated_user_then_export():
 
 @pytest.mark.asyncio
 async def test_forget_all_requires_confirmation():
-    async with MemoryClient("mem_test", "https://api.test", transport=httpx.MockTransport(lambda request: json_response({}))) as client:
+    async with MemoryClient("nxm_test", "https://api.test", transport=httpx.MockTransport(lambda request: json_response({}))) as client:
         with pytest.raises(ValueError):
             await client.forget_all()
 
@@ -108,6 +108,6 @@ async def test_api_auth_error():
     async def handler(request):
         return json_response({"detail": "Nope"}, status_code=403)
 
-    async with MemoryClient("mem_test", "https://api.test", transport=httpx.MockTransport(handler)) as client:
+    async with MemoryClient("nxm_test", "https://api.test", transport=httpx.MockTransport(handler)) as client:
         with pytest.raises(NexMemAuthError):
             await client.export()

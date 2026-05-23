@@ -90,7 +90,7 @@ async def test_authorization_value_is_never_logged(client: AsyncClient):
 async def test_cookie_and_api_key_headers_are_not_logged(client: AsyncClient):
     """Cookie and X-Api-Key header values must not appear in logs."""
     secret_cookie = "session=" + "a" * 32
-    secret_api_key = "mem_" + "b" * 40
+    secret_api_key = "nxm_" + "b" * 40
 
     with _capture_root_logger() as buffer:
         # Hit a public route so there's no auth required.
