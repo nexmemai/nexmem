@@ -63,7 +63,8 @@ SECTION 3 — CURRENT PR STACK
 | 7 | **#10** | `chore/before-soc2-polish` | `d3e000a` | P6-D7+P7-E6+P3-A7+P11-I5 (circuit breaker, JSON DoS guard, lockout escalation, DLQ CLI) | open |
 | 8 | **#11** | `chore/before-soc2-batch-2` | `9735b50` | P5-C9+P5-C6+P8-F7+P10-H7 (JSON CHECK, migration lint, Celery probe, CodeQL) | open |
 | 9 | **#13** | `chore/p4-apps-first-class` | `65835ca` | Block 1: P4-B1+B2+B3+B4 (apps as first-class + app-level RLS) | open |
-| 10 | **#14** | `chore/p7-rate-limits-error-hygiene` | `09c7f32` | Block 2: Amendments 1+2 + P7-E7+E8+E9 (app_id RLS plumbing, per-route + per-user limits, error hygiene) | open (current tip) |
+| 10 | **#14** | `chore/p7-rate-limits-error-hygiene` | `6509d6e` | Block 2: Amendments 1+2 + P7-E7+E8+E9 + standalone `nxm_` prefix fix (`43b3261`) + stale-bullet cleanup (`6509d6e`) | open |
+| 11 | **#15** | `chore/p9-reliability-incident-response` | `e7555f5` | Block 3: P9-G2 graceful shutdown + P9-G3..G6 incident-response runbooks (Postgres / Redis / OpenAI outage + backup-restore drill, RTO 4h / RPO 24h) | open (current tip) |
 
 ### Side / non-canonical PRs
 
@@ -81,12 +82,13 @@ SECTION 3 — CURRENT PR STACK
 ### Block sequence completed
 
 - **Block 1** → PR #13 (Phase 4 data model: `apps` table, `api_keys.app_id` FK, `/apps/register` rate limit, app-level RLS on the 5 memory tables).
-- **Block 2** → PR #14 (Amendment 1: wire `app.current_app_id`; Amendment 2: `engrams.app_id` + RLS; P7-E7 per-route limits on /auth/login + /memory/episode/write + /rag/chat; P7-E8 per-user `key_func`; P7-E9 generic error responses, 6 sites cleaned).
-- **Block 3 onward:** **awaiting user spec.** Do NOT pick a block from a candidate list without explicit confirmation.
+- **Block 2** → PR #14 (Amendment 1: wire `app.current_app_id`; Amendment 2: `engrams.app_id` + RLS; P7-E7 per-route limits on /auth/login + /memory/episode/write + /rag/chat; P7-E8 per-user `key_func`; P7-E9 generic error responses, 6 sites cleaned). Also includes two pre-Block-3 standalone commits on the same branch: `43b3261` (`nxm_` API key prefix per Rule #15) and `6509d6e` (remove now-stale `nxm_/mem_` discrepancy bullet from this file).
+- **Block 3** → PR #15 (P9-G2 HTTP/uvicorn graceful shutdown — lifespan teardown waits up to `GRACEFUL_SHUTDOWN_TIMEOUT` for in-flight requests, disposes engine cleanly, logs `graceful shutdown complete`; new in-flight tracking middleware; 4 unit tests. P9-G3..G6 incident-response runbooks: `docs/runbooks/POSTGRES_OUTAGE.md`, `REDIS_OUTAGE.md` (with explicit fail-open vs fail-closed table per subsystem), `OPENAI_OUTAGE.md` (referencing the existing P6-D7 circuit breaker), `BACKUP_RESTORE.md` (RTO 4h / RPO 24h, quarterly drill template — drill itself is operator action, not Kiro). Sandbox suite at this tip: 202 passed / 0 failed / 33 skipped.
+- **Block 4 onward:** **awaiting user spec.** Do NOT pick a block from a candidate list without explicit confirmation.
 
 ### Next block (placeholder)
 
-When the user defines Block 3, append a row to the canonical-stack table here in the same format. The stack-on-tip for Block 3 is **`chore/p7-rate-limits-error-hygiene` (`09c7f32`, PR #14)** unless the user says otherwise.
+When the user defines Block 4, append a row to the canonical-stack table here in the same format. The stack-on-tip for Block 4 is **`chore/p9-reliability-incident-response` (`e7555f5`, PR #15)** unless the user says otherwise.
 
 ═══════════════════════════════════════════
 APPENDIX — SESSION HONESTY FOOTER
@@ -106,4 +108,4 @@ The user's instruction was "exactly these sections" (1, 2, 3). This footer is **
 
 ### One-line current-state summary (overwrite this every session)
 
-> 2026-05-23 — Block 2 just shipped as PR #14 stacked on PR #13. Canonical stack is 8 PRs deep (PR #3 → #5 → #6 → #7 → #8 → #9 → #10 → #11 → #13 → #14). Zero merges to `main`. Awaiting Block 3 spec from user.
+> 2026-05-23 — Block 3 just shipped as PR #15 stacked on PR #14. Canonical stack is 11 PRs deep (PR #3 → #5 → #6 → #7 → #8 → #9 → #10 → #11 → #13 → #14 → #15). Zero merges to `main`. Awaiting Block 4 spec from user.
