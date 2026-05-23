@@ -343,8 +343,8 @@ def api_get(endpoint: str, params: dict = None):
     """Make GET request to API."""
     headers = {}
     if auth_token:
-        # Check if it's an API key (starts with mem_) or JWT
-        if auth_token.startswith("mem_"):
+        # Check if it's an API key (starts with nxm_) or JWT
+        if auth_token.startswith("nxm_"):
             headers["Authorization"] = f"ApiKey {auth_token}"
         else:
             headers["Authorization"] = f"Bearer {auth_token}"
@@ -361,8 +361,8 @@ def api_post(endpoint: str, data: dict = None):
     """Make POST request to API."""
     headers = {}
     if auth_token:
-        # Check if it's an API key (starts with mem_) or JWT
-        if auth_token.startswith("mem_"):
+        # Check if it's an API key (starts with nxm_) or JWT
+        if auth_token.startswith("nxm_"):
             headers["Authorization"] = f"ApiKey {auth_token}"
         else:
             headers["Authorization"] = f"Bearer {auth_token}"

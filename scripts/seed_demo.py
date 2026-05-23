@@ -42,7 +42,7 @@ DEMO_API_KEY_NAME = "Demo CLI Key"
 
 def _generate_api_key() -> tuple[str, str]:
     """Return (raw_key, sha256_hash). Store only the hash."""
-    raw = f"mem_{secrets.token_urlsafe(32)}"
+    raw = f"nxm_{secrets.token_urlsafe(32)}"
     hashed = hashlib.sha256(raw.encode()).hexdigest()
     return raw, hashed
 
@@ -229,7 +229,7 @@ async def seed(session: AsyncSession) -> None:
 
     await session.commit()
     print("\n[SUCCESS] Seed complete.")
-    if raw_key.startswith("mem_"):
+    if raw_key.startswith("nxm_"):
         print(f"\n   Use this header in API calls:")
         print(f'   Authorization: ApiKey {raw_key}\n')
 
