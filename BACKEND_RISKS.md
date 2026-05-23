@@ -1,6 +1,6 @@
 # Backend Risk Register
 
-**Last updated:** 2026-05-22 (Phase 2 hardening branch).
+**Last updated:** 2026-05-23 (Block 3 addendum: new R-301 entry — Redis fail-open). Phase-2 baseline last edited 2026-05-22.
 
 This document is the source of truth for backend risk. It is updated
 on every hardening pass. Do not delete entries; mark them
@@ -9,7 +9,8 @@ on every hardening pass. Do not delete entries; mark them
 Severity scale:
 - **P0** — blocks first real-user traffic.
 - **P1** — should be fixed before first real-user traffic.
-- **P2** — known limitation, accepted for private beta.
+- **300 series** — accepted for private beta, **must fix before public launch.** Introduced 2026-05-23.
+- **P2** — known limitation, accepted for private beta (no public-launch deadline).
 - **P3** — nice-to-have.
 
 ---
@@ -155,6 +156,34 @@ Severity scale:
   log line per request via structlog with `request_id`, `user_id`,
   `app_id`, `method`, `path`, `status`, `latency_ms`. A test
   asserts that no Authorization header value appears in a log line.
+
+---
+
+## 300 series — accepted for private beta, must fix before public launch
+
+This tier was introduced 2026-05-23 during Block 3 runbook authoring.
+The risks below are HIGH-severity in impact, but are explicitly
+acceptable for the controlled private-beta cohort. They become P0
+blockers before public launch.
+
+### R-301 Redis fail-open allows auth / rate-limit bypass during outage
+- **Severity:** HIGH.
+- **Affected subsystems:**
+  - `app/core/brute_force.py` — per-(email, IP) login lockout. `_get_redis()` returns `None` on connection error and the code falls back to a thread-local in-memory store.
+  - `app/core/rate_limit.py` — slowapi limiter (per-route + per-user caps). slowapi falls back to its in-memory storage when its Redis client raises.
+  - `app/core/token_blocklist.py` — access-token blocklist (P3-A5). `is_revoked` returns `False` (i.e. "token is not on the blocklist") on Redis error.
+- **Behaviour when Redis is configured but unreachable:** all three fail-open. The explicit per-subsystem table is in `docs/runbooks/REDIS_OUTAGE.md` §2. For contrast, `app/core/quotas.py::_check_and_increment` is **fail-closed** (raises `HTTPException(503)`) on the same Redis error — the asymmetry is the heart of this risk.
+- **Impact during a Redis outage:**
+  - Per-IP / per-user rate limits stop being enforced cluster-wide and silently degrade to per-process counters (per-replica). A distributed attacker can outrun the per-replica cap.
+  - Brute-force account lockout falls back to per-process state. With `--workers 1` plus a single replica it is still effective; with multiple replicas an attacker rotating IPs across replicas can bypass per-(email, IP) lockout.
+  - Revoked access tokens are accepted again until their `exp` is reached (default 4 hours, `settings.access_token_expire_hours`). Refresh tokens are unaffected because they are DB-backed.
+- **Status:** **accepted for private beta**, **must fix before public launch.** First identified during Block 3 (P9-G4 Redis runbook authoring) when the per-subsystem fail-mode table was added to `docs/runbooks/REDIS_OUTAGE.md`.
+- **Fix target:** Block 7 (operator tooling) or earlier if prioritized. The fix shape is "make all three subsystems fail-closed when `REDIS_URL` is configured" — matching the policy already in `app/core/quotas.py`.
+- **Mitigation until fixed:**
+  1. Monitor Redis uptime aggressively. Page on `/health/ready` returning non-200 because of Redis. The corresponding alert is already documented for the `docs/SLO.md` "Alerting" section landing in Block 4.
+  2. Set the Redis service's restart policy to `always` in the deployment config (Render → Redis service → Restart policy).
+  3. While the fix is pending, every Redis outage must trigger `READ_ONLY=true` per `docs/runbooks/REDIS_OUTAGE.md` §3.2 — within 5 minutes on a single-replica deploy, immediately on a multi-replica deploy.
+- **References:** `docs/runbooks/REDIS_OUTAGE.md` §2 (fail-open vs fail-closed table), `app/core/brute_force.py::_get_redis`, `app/core/rate_limit.py::limiter`, `app/core/token_blocklist.py::is_revoked`.
 
 ---
 
