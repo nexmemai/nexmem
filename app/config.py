@@ -87,6 +87,16 @@ class Settings(BaseSettings):
     access_token_expire_hours: int = 4
     refresh_token_expire_days: int = 7
 
+    # ── Admin endpoints (P11-I2/I3/I4, Block 6) ────────────────────────────────
+    # Static, opaque key used by ``X-Admin-Key`` on /api/v1/admin/*. When
+    # unset (the default) every admin route returns 501 Not Implemented —
+    # making the surface inert by default. Set this to a high-entropy random
+    # value in the deploy environment (NOT in source) before relying on
+    # any admin route. Compared in constant time via ``hmac.compare_digest``
+    # in ``app.core.admin_auth``. Never logged; redacted from Sentry by
+    # the existing scrubbing list (``Authorization``, ``Cookie``).
+    admin_api_key: Optional[str] = None
+
     # ── Phase 3: email verification + password reset (P3-A1, P3-A2) ────────────
     # Operator opt-in. Default False keeps backwards-compatible behaviour
     # for the existing test suite and tiny private beta. The acceptance

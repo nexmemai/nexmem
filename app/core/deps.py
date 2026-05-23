@@ -116,7 +116,11 @@ async def get_current_user(
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
             )
-        if token_type != "access":
+        # P11-I2 (Block 6): admin impersonation tokens carry
+        # ``type=impersonation`` and resolve to the target user
+        # exactly like an access token would. The audit row below
+        # captures the impersonation context per request.
+        if token_type not in ("access", "impersonation"):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token type"
             )
@@ -130,6 +134,29 @@ async def get_current_user(
             )
 
         if settings.demo_mode:
+            # P11-I3 (Block 6): demo-mode equivalent of the Redis user-
+            # blocklist check that ``decode_token`` does for production.
+            # We keep it here (not in security.py) so security.py has
+            # zero demo coupling; both paths converge on the same
+            # 401 + iat-based cutoff semantic. Only ``type=access`` is
+            # subject to the cutoff — admin impersonation tokens
+            # (P11-I2) intentionally survive a force-logout so the
+            # admin can still investigate the account.
+            from app import demo_db
+
+            if token_type == "access":
+                iat = payload.get("iat")
+                cutoff = demo_db.demo_force_logout.get(str(user_uuid))
+                if (
+                    cutoff is not None
+                    and iat is not None
+                    and int(iat) < int(cutoff)
+                ):
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail="Token revoked by admin force-logout",
+                    )
+
             demo_user = demo_auth.get_user_by_id(str(user_uuid))
             if demo_user is None:
                 # Token was issued for a user that no longer exists in the
@@ -173,4 +200,28 @@ async def get_current_user(
     request.state.current_app_id = app_id_from_key
     if not settings.demo_mode:
         await set_rls_context(db, str(user.id), app_id_from_key)
+    # P11-I2 (Block 6): record one audit row per request made under
+    # an admin impersonation token. Noisy by design — the request-level
+    # trail is the whole point of the feature ("which API call did the
+    # admin make while impersonating user X?"). The helper is best-
+    # effort and does not raise, so a busy admin session cannot DoS
+    # itself by saturating the audit table.
+    if scheme.lower() == "bearer":
+        try:
+            from app.core.audit_log import record_auth_event
+
+            payload_local = locals().get("payload")
+            if payload_local and payload_local.get("type") == "impersonation":
+                await record_auth_event(
+                    "impersonation_request",
+                    target_user_id=user.id,
+                    request=request,
+                    payload={
+                        "actor": "admin",
+                        "method": request.method,
+                        "path": request.url.path,
+                    },
+                )
+        except Exception:  # pragma: no cover - defensive
+            pass
     return user
