@@ -34,6 +34,17 @@ demo_password_reset_tokens: dict[str, dict] = {}      # token_hash -> record
 # entry by hand. Mirrors the production Redis key
 # ``user_blocklist:<user_id>`` set by ``token_blocklist.revoke_user_tokens``.
 demo_force_logout: dict[str, int] = {}
+# Block 7 (P4-B5) — per-app monthly usage counters. Key is the tuple
+# ``(app_id, month_year)``; value is a dict with the same shape as
+# the production ``app_usage`` row so the demo dashboard endpoint can
+# return it verbatim. Cleared per-test by ``reset_demo_auth`` (below).
+demo_app_usage: dict[tuple[str, str], dict] = {}
+# Block 7 (P4-B6) — per-app suspension state. Key is the app_id
+# string; value is ``{"suspended_at": iso_str, "suspension_reason":
+# str | None}``. Mirrors the columns added in migration 024. Read by
+# the suspension-check dependency in demo mode and written by the
+# admin suspend / unsuspend routes.
+demo_apps_suspension: dict[str, dict] = {}
 
 
 def reset_demo_auth() -> None:
@@ -45,6 +56,8 @@ def reset_demo_auth() -> None:
     demo_email_verification_tokens.clear()
     demo_password_reset_tokens.clear()
     demo_force_logout.clear()
+    demo_app_usage.clear()
+    demo_apps_suspension.clear()
 
 
 def generate_id() -> str:

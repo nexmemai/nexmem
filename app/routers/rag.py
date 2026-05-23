@@ -6,7 +6,7 @@ import time
 import structlog
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Depends, Request, Response
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Depends, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, text
 from app.database import get_db
@@ -15,6 +15,7 @@ from app.core.deps import get_current_user
 from app.core.quotas import enforce_read_quota
 from app.core.rate_limit import limiter
 from app.models.user import User
+from app.services.app_quota import record_app_read
 from app.services.retriever import get_retrieval_context
 from app.services.reranker import get_top_context
 
@@ -75,6 +76,7 @@ async def rag_chat(
     request: Request,
     response: Response,
     body: RAGRequest,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -182,6 +184,16 @@ async def rag_chat(
             logger.warning(f"Failed to create semantic memory: {e}")
 
         latency_ms = (time.time() - start_time) * 1000
+
+        # P4-B5 (Block 7): fire-and-forget per-app read counter.
+        # Demo mode short-circuits to the in-memory store; production
+        # opens its own session so a metrics failure cannot poison
+        # the response.
+        _aid = getattr(getattr(request, "state", None), "current_app_id", None)
+        if _aid:
+            background_tasks.add_task(
+                record_app_read, str(_aid), str(current_user.id)
+            )
 
         return {
             "reply": reply,
@@ -299,6 +311,15 @@ async def rag_chat(
     await db.commit()
 
     latency_ms = (time.time() - start_time) * 1000
+
+    # P4-B5 (Block 7): production-path read counter (same posture as
+    # the demo branch above).
+    _aid = getattr(getattr(request, "state", None), "current_app_id", None)
+    if _aid:
+        background_tasks.add_task(
+            record_app_read, str(_aid), str(current_user.id)
+        )
+
     return {
         "reply": reply,
         "retrieved_episodes": episodic_context[:5],

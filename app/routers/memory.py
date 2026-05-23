@@ -2,7 +2,7 @@
 
 from typing import Optional, List, Dict, Any
 import asyncio
-from fastapi import APIRouter, Depends, Query, Request, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, Request, Response
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, text
@@ -12,7 +12,10 @@ from app.database import get_db
 from app.models.user import User
 from app.core.deps import get_current_user
 from app.core.quotas import enforce_read_quota, enforce_write_quota
+from app.core.queue_pressure import check_queue_pressure
 from app.core.rate_limit import limiter
+from app.core.suspension_check import check_app_not_suspended
+from app.services.app_quota import record_app_read, record_app_write
 from app.services.embedder import embedder
 from app.services.engram_processor import engram_processor, decay_score
 from app.config import settings
@@ -21,6 +24,28 @@ from app.services.consolidation import persist_edge
 
 router = APIRouter(prefix="/memory", tags=["memory"])
 logger = logging.getLogger(__name__)
+
+
+def _maybe_schedule_app_metric(
+    background_tasks: BackgroundTasks,
+    request: Request,
+    user: User,
+    *,
+    is_write: bool,
+) -> None:
+    """Fire-and-forget app-usage increment if the request is app-bound.
+
+    Reads ``request.state.current_app_id`` (populated by API-key auth
+    in ``app.core.deps``). JWT auth leaves it None, in which case
+    we record nothing — only API-key requests are bound to an app
+    today (P4-B5 / Block 7). The increment helpers swallow every
+    exception, so this call cannot rollback or block the response.
+    """
+    aid = getattr(getattr(request, "state", None), "current_app_id", None)
+    if not aid:
+        return
+    fn = record_app_write if is_write else record_app_read
+    background_tasks.add_task(fn, str(aid), str(user.id))
 
 
 async def get_or_create_knowledge_node(
@@ -158,6 +183,8 @@ def assemble_context(
 @router.post("/context", response_model=ContextResponse, dependencies=[Depends(enforce_read_quota)])
 async def get_memory_context(
     body: ContextRequest,
+    request: Request,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -271,6 +298,13 @@ async def get_memory_context(
 
     token_count = len(assembled.split())
 
+    # P4-B5 (Block 7): fire-and-forget app-usage read counter.
+    # Recorded after the heavy retrieval succeeded so a 5xx during
+    # context assembly does not get counted as a billable read.
+    _maybe_schedule_app_metric(
+        background_tasks, request, current_user, is_write=False
+    )
+
     return ContextResponse(
         assembled_context=assembled,
         engram_context=engram_context,
@@ -287,12 +321,29 @@ async def get_memory_context(
     )
 
 
-@router.post("/episode/write", response_model=EpisodeWriteResponse, dependencies=[Depends(enforce_write_quota)])
+@router.post(
+    "/episode/write",
+    response_model=EpisodeWriteResponse,
+    dependencies=[
+        # Order matters here:
+        #   1. Backpressure (cheap LLEN; cuts off load before any
+        #      per-user quota math runs when Celery is saturated).
+        #   2. Suspension (cheap PK lookup; skips the expensive
+        #      embed/engram precompute below for a banned app).
+        #   3. Quota (Redis incr; the per-user monthly cap).
+        # All three are non-state-changing on a 4xx so the order
+        # only affects which error message the client sees first.
+        Depends(check_queue_pressure),
+        Depends(check_app_not_suspended),
+        Depends(enforce_write_quota),
+    ],
+)
 @limiter.limit(settings.episode_write_rate_limit)
 async def write_episode(
     request: Request,
     response: Response,
     body: EpisodeWriteRequest,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -338,6 +389,10 @@ async def write_episode(
         except Exception as e:
             logger.warning(f"Engram processing failed (demo): {e}")
             engram_id = None
+
+        _maybe_schedule_app_metric(
+            background_tasks, request, current_user, is_write=True
+        )
 
         return EpisodeWriteResponse(
             episodic_id=episodic_id,
@@ -517,6 +572,10 @@ async def write_episode(
             status_code=500,
             detail="Episode write failed; no partial state was persisted",
         )
+
+    _maybe_schedule_app_metric(
+        background_tasks, request, current_user, is_write=True
+    )
 
     return EpisodeWriteResponse(
         episodic_id=episodic_id,

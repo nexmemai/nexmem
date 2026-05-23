@@ -52,6 +52,28 @@ class App(Base):
         default=datetime.utcnow,
         onupdate=datetime.utcnow,
     )
+    # P4-B6 (Block 7): operator-controlled suspension. Both columns
+    # default NULL so this is a pure additive change for existing
+    # rows — see migration 024_app_suspension. ``is_active`` is left
+    # alone; suspension is independent of the user-facing
+    # active/inactive flag (a user-deactivated app has is_active=False
+    # without ever being suspended; an operator-suspended app has
+    # suspended_at != NULL while is_active stays True).
+    suspended_at = Column(DateTime(timezone=True), nullable=True)
+    suspension_reason = Column(Text, nullable=True)
+
+    @property
+    def is_suspended(self) -> bool:
+        """True iff the app has been operator-suspended.
+
+        Implemented as a Python-side property (not a ``hybrid_property``)
+        because the only call sites are the suspension-check
+        dependency and the audit-log payload — neither of which needs
+        the predicate inside a SQL filter today. Promoting to a
+        ``hybrid_property`` is a one-line change if a query like
+        ``select(App).where(App.is_suspended)`` ever shows up.
+        """
+        return self.suspended_at is not None
 
     def __repr__(self) -> str:  # pragma: no cover - cosmetic
         return f"<App id={self.id} user_id={self.user_id} name={self.name!r}>"

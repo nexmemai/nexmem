@@ -528,3 +528,169 @@ def execute_scheduled_deletions(self):
             error_type=type(exc).__name__,
         )
         raise self.retry(exc=exc, countdown=600)
+
+
+# ── P10-H3 (Block 7): code-as-config data retention ──────────────────────────
+@celery_app.task(
+    bind=True,
+    max_retries=3,
+    default_retry_delay=600,
+    name="app.tasks.enforce_data_retention",
+)
+def enforce_data_retention(self):
+    """Apply ``settings.retention_*_days`` to the relevant tables.
+
+    The task is intentionally simple: one ``DELETE FROM <table>
+    WHERE created_at < cutoff`` per configured retention class,
+    in its own per-class transaction so a failure on one table
+    does not leak into the others.
+
+    Behaviour rules:
+
+    * ``settings.retention_<class>_days == 0`` is the documented
+      "keep forever" sentinel — the task short-circuits that
+      class and reports nothing for it.
+    * Demo mode and read-only mode short-circuit completely. The
+      task never deletes from the in-memory demo store.
+    * Each class is wrapped in its own ``async with db.begin()`` so
+      a partial pass leaves the schema in a consistent state.
+    * The task touches **episodic_memory** and **gdpr_audit_log**
+      today. Adding more classes is a one-line edit; the wiring
+      is laid out below.
+
+    Operator action: add a Beat schedule entry for this task. We
+    deliberately do not enable it by default so existing
+    deployments do not lose data on next deploy. See
+    ``docs/DATA_RETENTION.md``.
+
+    Implementation note: we use the existing ``async_session()``
+    helper rather than a sync engine. The spec hints at
+    ``get_sync_db_session()``; that helper does not exist in the
+    codebase today, and ``execute_scheduled_deletions`` (the
+    reference task in this same file) uses ``async_to_sync(_run)()``
+    over an async session. We follow that pattern for consistency.
+    """
+    task_id = self.request.id
+    task_name = self.name
+    started_at = time.monotonic()
+
+    _log_task_event(
+        "task_start",
+        task_id=task_id,
+        task_name=task_name,
+    )
+
+    def _elapsed_ms() -> int:
+        return int((time.monotonic() - started_at) * 1000)
+
+    if settings.demo_mode:
+        _log_task_event(
+            "task_end",
+            task_id=task_id,
+            task_name=task_name,
+            duration_ms=_elapsed_ms(),
+            outcome="skipped",
+            reason="demo_mode",
+        )
+        return {"skipped": "demo_mode"}
+
+    if settings.read_only:
+        logger.warning(
+            "enforce_data_retention: skipped — service is in READ_ONLY mode"
+        )
+        _log_task_event(
+            "task_end",
+            task_id=task_id,
+            task_name=task_name,
+            duration_ms=_elapsed_ms(),
+            outcome="skipped",
+            reason="read_only",
+        )
+        return {"skipped": "read_only"}
+
+    from datetime import timedelta as _td
+
+    # (config_attr, table_name, friendly_key)
+    retention_classes = (
+        ("retention_episodic_days", "episodic_memory", "episodic_deleted"),
+        ("retention_audit_log_days", "gdpr_audit_log", "audit_log_deleted"),
+    )
+
+    # Short-circuit before opening a DB session if EVERY class is
+    # disabled. Saves the round-trip and lets the test assert "no
+    # session is opened" as a stronger contract than "no DELETE is
+    # issued". Operators with retention disabled across the board
+    # also avoid a per-run pool checkout.
+    enabled_classes = [
+        c for c in retention_classes
+        if int(getattr(settings, c[0], 0) or 0) > 0
+    ]
+    if not enabled_classes:
+        _log_task_event(
+            "task_end",
+            task_id=task_id,
+            task_name=task_name,
+            duration_ms=_elapsed_ms(),
+            outcome="success",
+            note="all_classes_disabled",
+        )
+        return {}
+
+    async def _run() -> dict:
+        from sqlalchemy import text
+
+        results: dict[str, int] = {}
+        async with async_session() as db:
+            # Retention is a system-level operation: it scans every
+            # user's rows. We deliberately leave the RLS context
+            # empty so the policy permits the global delete. The
+            # task is gated by Celery + the operator-owned Beat
+            # schedule, so unauthorized triggers are not a concern.
+            for cfg_attr, table, key in enabled_classes:
+                days = int(getattr(settings, cfg_attr, 0) or 0)
+                cutoff = datetime.utcnow() - _td(days=days)
+                try:
+                    async with db.begin():
+                        r = await db.execute(
+                            text(
+                                f"DELETE FROM {table} "
+                                f"WHERE created_at < :cutoff"
+                            ),
+                            {"cutoff": cutoff},
+                        )
+                        results[key] = int(r.rowcount or 0)
+                    logger.info(
+                        "enforce_data_retention: %s deleted=%s cutoff=%s",
+                        table,
+                        results[key],
+                        cutoff.isoformat(),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.error(
+                        "enforce_data_retention: %s failed: %s", table, exc
+                    )
+                    results[key] = -1  # sentinel: this class failed
+        return results
+
+    try:
+        outcome = async_to_sync(_run)()
+        _log_task_event(
+            "task_end",
+            task_id=task_id,
+            task_name=task_name,
+            duration_ms=_elapsed_ms(),
+            outcome="success",
+            **outcome,
+        )
+        return outcome
+    except Exception as exc:
+        logger.error("enforce_data_retention: top-level failure: %s", exc)
+        _log_task_event(
+            "task_end",
+            task_id=task_id,
+            task_name=task_name,
+            duration_ms=_elapsed_ms(),
+            outcome="retry",
+            error_type=type(exc).__name__,
+        )
+        raise self.retry(exc=exc, countdown=600)

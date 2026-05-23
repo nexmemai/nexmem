@@ -41,10 +41,11 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from pydantic import BaseModel, Field
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -54,6 +55,7 @@ from app.core.admin_auth import get_admin_user
 from app.core.audit_log import record_auth_event
 from app.core.token_blocklist import revoke_user_tokens
 from app.database import get_db
+from app.models.apps import App
 from app.models.auth import RefreshToken
 
 
@@ -428,3 +430,164 @@ async def usage_analytics(
         "users_by_plan": {tier: int(count) for tier, count in plan_rows.all()},
         "deletion_requests_pending": int(deletion_pending.scalar() or 0),
     }
+
+
+# ── P4-B6 (Block 7): app suspension ──────────────────────────────────────────
+class _SuspendBody(BaseModel):
+    reason: str = Field(..., min_length=1, max_length=2000)
+
+
+@router.post("/apps/{app_id}/suspend")
+async def admin_suspend_app(
+    app_id: str,
+    body: _SuspendBody,
+    request: Request,
+    _admin: bool = Depends(get_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Mark an app as suspended.
+
+    Side effect: every API key bound to ``app_id`` will start
+    failing the ``check_app_not_suspended`` write dependency.
+    Reads continue to work — see ``app/core/suspension_check.py``
+    for the rationale.
+
+    Audit row uses ``target_user_id = app.user_id`` (the audit
+    schema requires a user FK). The app_id and the operator
+    reason both live in the JSONB ``payload``.
+    """
+    try:
+        app_uuid = uuid.UUID(app_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid app_id (must be a UUID)",
+        )
+
+    suspended_at = datetime.now(timezone.utc)
+
+    if settings.demo_mode:
+        # Demo path — no apps table. Store suspension state in the
+        # parallel demo dict that the suspension-check dependency
+        # reads from. There is no app.user_id we can audit here,
+        # so we use a deterministic-but-clearly-fake target_user_id
+        # so ``record_auth_event`` does not silently drop the row.
+        from app import demo_db
+
+        demo_db.demo_apps_suspension[str(app_uuid)] = {
+            "suspended_at": suspended_at.isoformat(),
+            "suspension_reason": body.reason,
+        }
+        target = str(app_uuid)  # audit row keyed on app_uuid as a UUID
+        await record_auth_event(
+            "app_suspended",
+            target_user_id=target,
+            request=request,
+            payload={
+                "actor": "admin",
+                "app_id": str(app_uuid),
+                "reason": body.reason,
+            },
+        )
+        logger.info("admin.suspend_app: app_id=%s (demo)", app_uuid)
+        return {
+            "suspended": True,
+            "app_id": str(app_uuid),
+            "suspended_at": suspended_at.isoformat(),
+        }
+
+    # Production path
+    from sqlalchemy import select
+
+    result = await db.execute(select(App).where(App.id == app_uuid))
+    app_row = result.scalar_one_or_none()
+    if app_row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="App not found"
+        )
+    await db.execute(
+        update(App)
+        .where(App.id == app_uuid)
+        .values(suspended_at=suspended_at, suspension_reason=body.reason)
+    )
+    await db.commit()
+
+    await record_auth_event(
+        "app_suspended",
+        target_user_id=app_row.user_id,
+        request=request,
+        payload={
+            "actor": "admin",
+            "app_id": str(app_uuid),
+            "reason": body.reason,
+        },
+    )
+
+    logger.info(
+        "admin.suspend_app: app_id=%s user_id=%s",
+        app_uuid,
+        app_row.user_id,
+    )
+    return {
+        "suspended": True,
+        "app_id": str(app_uuid),
+        "suspended_at": suspended_at.isoformat(),
+    }
+
+
+@router.post("/apps/{app_id}/unsuspend")
+async def admin_unsuspend_app(
+    app_id: str,
+    request: Request,
+    _admin: bool = Depends(get_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Clear an app's suspension state."""
+    try:
+        app_uuid = uuid.UUID(app_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid app_id (must be a UUID)",
+        )
+
+    if settings.demo_mode:
+        from app import demo_db
+
+        demo_db.demo_apps_suspension.pop(str(app_uuid), None)
+        await record_auth_event(
+            "app_unsuspended",
+            target_user_id=str(app_uuid),
+            request=request,
+            payload={"actor": "admin", "app_id": str(app_uuid)},
+        )
+        logger.info("admin.unsuspend_app: app_id=%s (demo)", app_uuid)
+        return {"unsuspended": True, "app_id": str(app_uuid)}
+
+    from sqlalchemy import select
+
+    result = await db.execute(select(App).where(App.id == app_uuid))
+    app_row = result.scalar_one_or_none()
+    if app_row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="App not found"
+        )
+    await db.execute(
+        update(App)
+        .where(App.id == app_uuid)
+        .values(suspended_at=None, suspension_reason=None)
+    )
+    await db.commit()
+
+    await record_auth_event(
+        "app_unsuspended",
+        target_user_id=app_row.user_id,
+        request=request,
+        payload={"actor": "admin", "app_id": str(app_uuid)},
+    )
+    logger.info(
+        "admin.unsuspend_app: app_id=%s user_id=%s",
+        app_uuid,
+        app_row.user_id,
+    )
+    return {"unsuspended": True, "app_id": str(app_uuid)}

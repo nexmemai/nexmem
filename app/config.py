@@ -329,6 +329,43 @@ class Settings(BaseSettings):
     pro_monthly_reads: int = 1000000
     enterprise_monthly_reads: int = 10000000
 
+    # ── Celery backpressure (P6-D8, Block 7) ───────────────────────────────────
+    # When the Celery default queue (LLEN of the ``celery`` Redis list)
+    # exceeds this depth, write routes that trigger consolidation 503
+    # via the ``check_queue_pressure`` dependency. Tune via the
+    # ``CELERY_QUEUE_DEPTH_LIMIT`` env var. Default 1000 lines up with
+    # ~1 worker × max_tasks_per_child=100 × 10 minutes of build-up
+    # before the user-visible slowdown becomes worse than the
+    # cooperative 503. Set to 0 to disable backpressure entirely.
+    celery_queue_depth_limit: int = 1000
+
+    # ── Data retention (P10-H3, Block 7) ───────────────────────────────────────
+    # Per-table retention in **days**. ``0`` is the documented sentinel
+    # for "keep forever" — the ``enforce_data_retention`` Celery task
+    # short-circuits any table whose setting is 0. Defaults reflect the
+    # private-beta policy:
+    #
+    #   episodic   365 days  — raw conversation turns; one year is
+    #                          the default cap most users expect for a
+    #                          conversational memory.
+    #   semantic     0 days  — distilled knowledge layer; never auto-
+    #                          delete. Operator can set a cap if their
+    #                          data class requires it.
+    #   engrams      0 days  — same posture as semantic.
+    #   audit_log  730 days  — 2 years. Aligns with the most common
+    #                          SOC2 / ISO 27001 retention floors.
+    #
+    # Operator overrides via env: ``RETENTION_EPISODIC_DAYS``,
+    # ``RETENTION_SEMANTIC_DAYS``, ``RETENTION_ENGRAM_DAYS``,
+    # ``RETENTION_AUDIT_LOG_DAYS``. The Celery Beat schedule entry
+    # for ``enforce_data_retention`` is operator-owned; we deliberately
+    # do not enable it by default to avoid surprise deletions on
+    # existing deployments. See ``docs/DATA_RETENTION.md``.
+    retention_episodic_days: int = 365
+    retention_semantic_days: int = 0
+    retention_engram_days: int = 0
+    retention_audit_log_days: int = 730
+
     def validate_production(self) -> None:
         """Strict validation for production mode — RAISES on insecure config.
 
