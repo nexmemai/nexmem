@@ -6,7 +6,7 @@ Supports two modes:
 """
 
 from app.config import settings
-from app.routers import episodic, semantic, procedural, graph, rag, auth, health, memory, apps, gdpr, totp
+from app.routers import episodic, semantic, procedural, graph, rag, auth, health, memory, apps, gdpr, totp, admin
 from app.core.rate_limit import limiter
 from app.middleware.body_size_limit import BodySizeLimitMiddleware
 from app.middleware.json_shape_guard import JsonShapeGuardMiddleware
@@ -456,6 +456,11 @@ app.include_router(memory.router, prefix="/api/v1")
 app.include_router(apps.router, prefix="/api/v1")
 app.include_router(gdpr.router, prefix="/api/v1")
 app.include_router(totp.router, prefix="/api/v1")
+# P11-I2/I3/I4 (Block 6) — admin router. The router itself owns the
+# full ``/api/v1/admin`` prefix because every route inside is gated
+# behind the ``X-Admin-Key`` Depends; mounting it without an extra
+# prefix keeps the gate single-source-of-truth.
+app.include_router(admin.router)
 
 
 @app.api_route("/", methods=["GET", "HEAD"])

@@ -122,3 +122,101 @@ def is_revoked(jti: Optional[str]) -> bool:
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning("token_blocklist.is_revoked: redis unavailable: %s", exc)
         return False
+
+
+
+# ── P11-I3 (Block 6): user-level force-logout ────────────────────────────────
+# Per-jti revocation (above) is fine when the operator holds the token
+# they want to kill. An admin force-logout doesn't have the user's bearer
+# header — they only have the user_id — so we need a separate primitive:
+# a per-user CUTOFF TIMESTAMP. Every access token carries an ``iat`` claim
+# (Block 6 addition); ``decode_token`` rejects any access token whose iat
+# is strictly less than the stored cutoff. Tokens issued AFTER the cutoff
+# (because the user re-logged in legitimately) pass through, so the
+# operator does not have to manually clear the entry.
+#
+# Storage: Redis key ``user_blocklist:<user_id>`` = unix timestamp string.
+# TTL defaults to the configured access-token lifetime — once every
+# pre-cutoff access token has expired naturally, the cutoff entry is
+# pointless and Redis can drop it.
+#
+# Failure posture matches the per-jti version:
+#   ``revoke_user_tokens`` fails CLOSED (returns False on Redis outage so
+#       the admin route can surface 503).
+#   ``get_user_revocation_cutoff`` fails OPEN (returns None on Redis
+#       outage so a Redis incident doesn't lock every authenticated user
+#       out for 4h). Defence in depth: refresh-token revocation in the
+#       database still applies when this fails open.
+
+
+def revoke_user_tokens(user_id: str, ttl_seconds: Optional[int] = None) -> bool:
+    """Force-logout: every access token for ``user_id`` issued before now()
+    is rejected by ``decode_token``.
+
+    Stores ``user_blocklist:<user_id>`` = current unix timestamp with TTL =
+    ``ttl_seconds`` (default = configured access-token lifetime). Returns
+    True if the entry was persisted, False on Redis unavailability.
+    """
+    if not user_id:
+        return False
+    client = _redis_client()
+    if client is None:
+        logger.warning(
+            "token_blocklist.revoke_user_tokens: redis unavailable; "
+            "user_id=%s NOT durably revoked",
+            user_id,
+        )
+        return False
+
+    ttl = ttl_seconds if ttl_seconds is not None else (
+        settings.access_token_expire_hours * 3600
+    )
+    ttl = max(1, int(ttl))
+    cutoff = int(datetime.utcnow().timestamp())
+    try:
+        client.setex(f"user_blocklist:{user_id}", ttl, str(cutoff))
+        logger.info(
+            "token_blocklist: force-logout user_id=%s cutoff=%s ttl=%ss",
+            user_id,
+            cutoff,
+            ttl,
+        )
+        return True
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning(
+            "token_blocklist.revoke_user_tokens: redis setex failed: %s", exc
+        )
+        return False
+
+
+def get_user_revocation_cutoff(user_id: str) -> Optional[int]:
+    """Return the unix-timestamp cutoff for ``user_id``, or ``None``.
+
+    A return of ``None`` means either (a) the user has not been
+    force-logged-out, or (b) Redis is unavailable. Both cases pass
+    through; see ``revoke_user_tokens`` docstring for the rationale.
+    """
+    if not user_id:
+        return None
+    client = _redis_client()
+    if client is None:
+        return None
+    try:
+        raw = client.get(f"user_blocklist:{user_id}")
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning(
+            "token_blocklist.get_user_revocation_cutoff: redis get failed: %s",
+            exc,
+        )
+        return None
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        # Stale or malformed entry — log and treat as not revoked.
+        logger.warning(
+            "token_blocklist.get_user_revocation_cutoff: unparseable value %r",
+            raw,
+        )
+        return None

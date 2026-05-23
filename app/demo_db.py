@@ -26,6 +26,14 @@ demo_refresh_tokens: dict[str, dict] = {}     # token_hash -> record
 # Phase 3: email-verification + password-reset hashed-token stores.
 demo_email_verification_tokens: dict[str, dict] = {}  # token_hash -> record
 demo_password_reset_tokens: dict[str, dict] = {}      # token_hash -> record
+# Block 6 (P11-I3) — admin force-logout cutoff. user_id -> unix timestamp.
+# An access token whose ``iat`` claim is strictly less than the cutoff is
+# rejected by the demo-mode bearer auth path (see ``app.core.deps``).
+# Tokens issued AFTER force-logout (iat >= cutoff) authenticate normally,
+# so a legitimate re-login still works without the operator clearing the
+# entry by hand. Mirrors the production Redis key
+# ``user_blocklist:<user_id>`` set by ``token_blocklist.revoke_user_tokens``.
+demo_force_logout: dict[str, int] = {}
 
 
 def reset_demo_auth() -> None:
@@ -36,6 +44,7 @@ def reset_demo_auth() -> None:
     demo_refresh_tokens.clear()
     demo_email_verification_tokens.clear()
     demo_password_reset_tokens.clear()
+    demo_force_logout.clear()
 
 
 def generate_id() -> str:
