@@ -61,12 +61,24 @@ def _build_engine_kwargs() -> dict:
     ``statement_timeout`` and ``idle_in_transaction_session_timeout``
     via asyncpg's ``server_settings`` so a runaway query cannot pin a
     pooler connection forever.
+
+    Phase 8 (P5-C2): pool sizing is sourced from settings so an
+    operator can tune via env vars (``DB_POOL_SIZE``, ``DB_MAX_OVERFLOW``,
+    ``DB_POOL_TIMEOUT``, ``DB_POOL_RECYCLE``) without redeploying
+    code. Default math:
+        Render free tier: 1 worker, Supabase free: 20 max connections.
+        Pool size 5 + max overflow 10 = 15 max per worker.
+        Leave 5 for admin/migrations. Total = 20. Safe.
+    Bump these together with ``db_max_overflow`` and ``replicas`` when
+    moving to Supabase Pro (max_client_conn 200) so the math stays
+    below the upstream limit.
     """
     common = dict(
         echo=settings.debug,
         pool_size=settings.db_pool_size,
         max_overflow=settings.db_max_overflow,
-        pool_timeout=30,
+        pool_timeout=settings.db_pool_timeout,
+        pool_recycle=settings.db_pool_recycle,
         pool_pre_ping=not settings.demo_mode,
     )
     connect_args: dict = {

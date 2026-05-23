@@ -95,6 +95,61 @@ async def lifespan(app: FastAPI):
             before_send=_scrub,
         )
         logger.info("Sentry integration initialized.")
+
+    # ── P8-F1: OpenTelemetry distributed tracing ──────────────────────────────
+    # Lazy import: the OTEL packages are only loaded when the operator
+    # explicitly opts in by setting OTEL_EXPORTER_OTLP_ENDPOINT.
+    # Skipping the import path entirely when the endpoint is unset
+    # means the test suite (which never sets the endpoint) does not
+    # need the OTEL libraries installed locally.
+    if settings.otel_exporter_otlp_endpoint:
+        try:
+            from opentelemetry import trace
+            from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
+                OTLPSpanExporter,
+            )
+            from opentelemetry.sdk.resources import Resource
+            from opentelemetry.sdk.trace import TracerProvider
+            from opentelemetry.sdk.trace.export import BatchSpanProcessor
+            from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+            from opentelemetry.instrumentation.sqlalchemy import (
+                SQLAlchemyInstrumentor,
+            )
+            from opentelemetry.instrumentation.redis import RedisInstrumentor
+
+            resource = Resource.create({"service.name": settings.otel_service_name})
+            provider = TracerProvider(resource=resource)
+            provider.add_span_processor(
+                BatchSpanProcessor(
+                    OTLPSpanExporter(endpoint=settings.otel_exporter_otlp_endpoint)
+                )
+            )
+            trace.set_tracer_provider(provider)
+
+            FastAPIInstrumentor.instrument_app(app)
+            # SQLAlchemy instrumentation is process-global, not per-engine.
+            SQLAlchemyInstrumentor().instrument()
+            RedisInstrumentor().instrument()
+
+            logger.info(
+                "OpenTelemetry tracing enabled, exporter: %s",
+                settings.otel_exporter_otlp_endpoint,
+            )
+        except Exception as exc:
+            # Tracing is best-effort: a misconfigured endpoint, missing
+            # OTEL package, or unreachable collector must NOT prevent
+            # the application from starting. Log the failure and
+            # continue without tracing.
+            logger.warning(
+                "OpenTelemetry tracing setup failed (%s); continuing without tracing",
+                exc,
+            )
+    else:
+        logger.info(
+            "OpenTelemetry tracing disabled "
+            "(OTEL_EXPORTER_OTLP_ENDPOINT not set)"
+        )
+
     if settings.demo_mode:
         print("=" * 60)
         print("AI Memory Layer - DEMO MODE")

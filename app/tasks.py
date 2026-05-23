@@ -30,13 +30,23 @@ Phase 6 hardening:
   task short-circuits with a warning rather than blocking the
   worker. The kill switch only freezes inbound HTTP today; this
   closes the same door for the background path.
+
+* **P8-F2 / P6-D10 structured task logging.** Every task emits a
+  structured log line at start and at terminal outcome
+  (``success`` / ``failure`` / ``retry`` / ``skipped`` / ``dlq``)
+  with ``task_id``, ``task_name``, ``user_id``, ``app_id``, and
+  ``duration_ms``. The ``_log_task_event`` helper centralises field
+  names so they cannot drift across tasks; tests assert that the
+  ``task_id`` field is present in the structured payload.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Optional
+import time
+from typing import Any, Optional
 
+import structlog
 from asgiref.sync import async_to_sync
 
 from app.celery_app import celery_app
@@ -46,6 +56,47 @@ from app.database import async_session, set_rls_context
 from app.services.consolidation import consolidate_for_user
 
 logger = logging.getLogger(__name__)
+
+# P8-F2 / P6-D10: structured task logger. Distinct logger name
+# (``celery.task``) so the operator can filter on it independently of
+# the HTTP request log. ``structlog.get_logger`` returns a
+# ``BoundLogger`` whose calls produce the same JSON shape as the rest
+# of the application (configured in ``app.core.logging``).
+_task_logger = structlog.get_logger("celery.task")
+
+
+def _log_task_event(
+    event: str,
+    *,
+    task_id: Optional[str],
+    task_name: str,
+    user_id: Optional[str] = None,
+    app_id: Optional[str] = None,
+    duration_ms: Optional[int] = None,
+    outcome: Optional[str] = None,
+    **extra: Any,
+) -> None:
+    """Emit one structured Celery task log line.
+
+    P8-F2 / P6-D10. Every task call site goes through this helper so
+    field names (``task_id``, ``task_name``, ``user_id``, ``app_id``,
+    ``duration_ms``, ``outcome``) cannot drift. Additional task-specific
+    fields are accepted via ``**extra`` and passed through verbatim.
+    """
+    payload = {
+        "task_id": task_id,
+        "task_name": task_name,
+    }
+    if user_id is not None:
+        payload["user_id"] = user_id
+    if app_id is not None:
+        payload["app_id"] = app_id
+    if duration_ms is not None:
+        payload["duration_ms"] = duration_ms
+    if outcome is not None:
+        payload["outcome"] = outcome
+    payload.update(extra)
+    _task_logger.info(event, **payload)
 
 
 def _consolidation_lock_key(user_id: str, days_old: int) -> str:
@@ -66,10 +117,34 @@ def consolidate_user_memory_task(
     Idempotent across the lock TTL, RLS-aware, and routes failed
     payloads to the DLQ when retries are exhausted.
     """
+    task_id = self.request.id
+    task_name = self.name
+    started_at = time.monotonic()
+
+    _log_task_event(
+        "task_start",
+        task_id=task_id,
+        task_name=task_name,
+        user_id=user_id,
+        days_old=days_old,
+    )
+
+    def _elapsed_ms() -> int:
+        return int((time.monotonic() - started_at) * 1000)
+
     if settings.read_only:
         logger.warning(
             "consolidation: skipped — service is in READ_ONLY mode (user=%s)",
             user_id,
+        )
+        _log_task_event(
+            "task_end",
+            task_id=task_id,
+            task_name=task_name,
+            user_id=user_id,
+            duration_ms=_elapsed_ms(),
+            outcome="skipped",
+            reason="read_only",
         )
         return {"skipped": True, "reason": "read_only"}
 
@@ -80,6 +155,15 @@ def consolidate_user_memory_task(
     if lock_token is None:
         logger.info(
             "consolidation: skipping — another worker holds %s", lock_key
+        )
+        _log_task_event(
+            "task_end",
+            task_id=task_id,
+            task_name=task_name,
+            user_id=user_id,
+            duration_ms=_elapsed_ms(),
+            outcome="skipped",
+            reason="duplicate",
         )
         return {"skipped": True, "reason": "duplicate"}
 
@@ -111,6 +195,15 @@ def consolidate_user_memory_task(
             user_id,
             result,
         )
+        _log_task_event(
+            "task_end",
+            task_id=task_id,
+            task_name=task_name,
+            user_id=user_id,
+            duration_ms=_elapsed_ms(),
+            outcome="success",
+            consolidated=int(result),
+        )
         return {"consolidated": int(result), "user_id": user_id}
     except Exception as exc:
         logger.error(
@@ -135,10 +228,31 @@ def consolidate_user_memory_task(
                     "error_type": type(exc).__name__,
                 }
             )
+            _log_task_event(
+                "task_end",
+                task_id=task_id,
+                task_name=task_name,
+                user_id=user_id,
+                duration_ms=_elapsed_ms(),
+                outcome="dlq",
+                error_type=type(exc).__name__,
+                retries=self.request.retries,
+            )
             return {"failed": True, "user_id": user_id, "dlq": True}
 
         # Exponential backoff: 60s, 120s, 240s.
         countdown = 60 * (2 ** self.request.retries)
+        _log_task_event(
+            "task_end",
+            task_id=task_id,
+            task_name=task_name,
+            user_id=user_id,
+            duration_ms=_elapsed_ms(),
+            outcome="retry",
+            error_type=type(exc).__name__,
+            attempt=self.request.retries + 1,
+            countdown_seconds=countdown,
+        )
         # ``self.retry`` raises ``Retry`` to signal the broker.
         # We deliberately do NOT release the lock here — the lock
         # TTL covers the retry window, and re-acquiring on the next
@@ -170,9 +284,30 @@ def consolidate_all_users(self):
     when ``app.current_user_id`` is NULL. Each enqueued task sets
     its own per-user context, so the work itself remains RLS-safe.
     """
+    task_id = self.request.id
+    task_name = self.name
+    started_at = time.monotonic()
+
+    _log_task_event(
+        "task_start",
+        task_id=task_id,
+        task_name=task_name,
+    )
+
+    def _elapsed_ms() -> int:
+        return int((time.monotonic() - started_at) * 1000)
+
     if settings.read_only:
         logger.warning(
             "consolidation: scheduler skipped — service is in READ_ONLY mode"
+        )
+        _log_task_event(
+            "task_end",
+            task_id=task_id,
+            task_name=task_name,
+            duration_ms=_elapsed_ms(),
+            outcome="skipped",
+            reason="read_only",
         )
         return {"skipped": True, "reason": "read_only"}
 
@@ -193,7 +328,24 @@ def consolidate_all_users(self):
         return {"users_queued": triggered}
 
     try:
-        return async_to_sync(_run_all)()
+        outcome = async_to_sync(_run_all)()
+        _log_task_event(
+            "task_end",
+            task_id=task_id,
+            task_name=task_name,
+            duration_ms=_elapsed_ms(),
+            outcome="success",
+            users_queued=outcome.get("users_queued", 0),
+        )
+        return outcome
     except Exception as exc:
         logger.error("consolidate_all_users failed: %s", exc)
+        _log_task_event(
+            "task_end",
+            task_id=task_id,
+            task_name=task_name,
+            duration_ms=_elapsed_ms(),
+            outcome="retry",
+            error_type=type(exc).__name__,
+        )
         raise self.retry(exc=exc, countdown=300)
