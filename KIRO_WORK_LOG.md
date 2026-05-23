@@ -297,6 +297,8 @@ All canonical-stack PRs are **open** and unmerged at the time of this log.
 | 8 | **Confirm GitHub Actions CI is green** on `main` after each merge. | Proves the stack actually works | **High** |
 | 9 | **Schedule the first quarterly backup-restore drill** per `docs/runbooks/BACKUP_RESTORE.md` Section 7. Time-box: 1 hour. | Required before public beta and SOC2 (P5-C10 / P9-G6 acceptance) | **High** |
 | 10 | **Merge PR #12** (`kiro/work-log`) so the historical log lives on `main`, OR formally retire `kiro/work-log` and adopt the working-branch source-of-truth model already in effect this session. | Single source of truth | Medium |
+| 11 | **Publish `nexmem-py` to PyPI** (Block 8 / P12-J1). Run from a machine with the PyPI API token in `~/.pypirc`: `cd nexmem-py && python -m build && twine upload dist/*`. The wheel + sdist build was verified in the sandbox; the only remaining step is the upload. | Required for the public-beta announcement post — devs cannot `pip install nexmem-py` without it | High |
+| 12 | **Publish `nexmem-js` to npm** (Block 8 / P12-J2). Run from a machine with `npm login` to the `nexmem` org token: `cd nexmem-js && npm install && npm run build && npm publish --access public`. The TypeScript build + Jest test suite (6/6 passing) was verified in the sandbox. | Same as #11 — devs cannot `npm install nexmem-js` without it | High |
 
 ---
 
