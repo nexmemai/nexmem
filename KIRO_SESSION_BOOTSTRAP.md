@@ -64,7 +64,8 @@ SECTION 3 — CURRENT PR STACK
 | 8 | **#11** | `chore/before-soc2-batch-2` | `9735b50` | P5-C9+P5-C6+P8-F7+P10-H7 (JSON CHECK, migration lint, Celery probe, CodeQL) | open |
 | 9 | **#13** | `chore/p4-apps-first-class` | `65835ca` | Block 1: P4-B1+B2+B3+B4 (apps as first-class + app-level RLS) | open |
 | 10 | **#14** | `chore/p7-rate-limits-error-hygiene` | `6509d6e` | Block 2: Amendments 1+2 + P7-E7+E8+E9 + standalone `nxm_` prefix fix (`43b3261`) + stale-bullet cleanup (`6509d6e`) | open |
-| 11 | **#15** | `chore/p9-reliability-incident-response` | `e7555f5` | Block 3: P9-G2 graceful shutdown + P9-G3..G6 incident-response runbooks (Postgres / Redis / OpenAI outage + backup-restore drill, RTO 4h / RPO 24h) | open (current tip) |
+| 11 | **#15** | `chore/p9-reliability-incident-response` | `e2328bf` | Block 3: P9-G2 graceful shutdown + P9-G3..G6 incident-response runbooks (Postgres / Redis / OpenAI outage + backup-restore drill, RTO 4h / RPO 24h) + R-301 risk entry | open |
+| 12 | **#16** | `chore/p8-observability` | `85f862a` | Block 4: P5-C2 (env-tunable pool sizing) + P8-F1 (OpenTelemetry, lazy-import opt-in) + P8-F2/P6-D10 (structured Celery task logs) + P8-F3/F4 (`docs/SLO.md` — 4 SLOs DEFINED + 5 alerts DOCUMENTED) | open (current tip) |
 
 ### Side / non-canonical PRs
 
@@ -83,12 +84,13 @@ SECTION 3 — CURRENT PR STACK
 
 - **Block 1** → PR #13 (Phase 4 data model: `apps` table, `api_keys.app_id` FK, `/apps/register` rate limit, app-level RLS on the 5 memory tables).
 - **Block 2** → PR #14 (Amendment 1: wire `app.current_app_id`; Amendment 2: `engrams.app_id` + RLS; P7-E7 per-route limits on /auth/login + /memory/episode/write + /rag/chat; P7-E8 per-user `key_func`; P7-E9 generic error responses, 6 sites cleaned). Also includes two pre-Block-3 standalone commits on the same branch: `43b3261` (`nxm_` API key prefix per Rule #15) and `6509d6e` (remove now-stale `nxm_/mem_` discrepancy bullet from this file).
-- **Block 3** → PR #15 (P9-G2 HTTP/uvicorn graceful shutdown — lifespan teardown waits up to `GRACEFUL_SHUTDOWN_TIMEOUT` for in-flight requests, disposes engine cleanly, logs `graceful shutdown complete`; new in-flight tracking middleware; 4 unit tests. P9-G3..G6 incident-response runbooks: `docs/runbooks/POSTGRES_OUTAGE.md`, `REDIS_OUTAGE.md` (with explicit fail-open vs fail-closed table per subsystem), `OPENAI_OUTAGE.md` (referencing the existing P6-D7 circuit breaker), `BACKUP_RESTORE.md` (RTO 4h / RPO 24h, quarterly drill template — drill itself is operator action, not Kiro). Sandbox suite at this tip: 202 passed / 0 failed / 33 skipped.
-- **Block 4 onward:** **awaiting user spec.** Do NOT pick a block from a candidate list without explicit confirmation.
+- **Block 3** → PR #15 (P9-G2 HTTP/uvicorn graceful shutdown — lifespan teardown waits up to `GRACEFUL_SHUTDOWN_TIMEOUT` for in-flight requests, disposes engine cleanly, logs `graceful shutdown complete`; new in-flight tracking middleware; 4 unit tests. P9-G3..G6 incident-response runbooks: `docs/runbooks/POSTGRES_OUTAGE.md`, `REDIS_OUTAGE.md` (with explicit fail-open vs fail-closed table per subsystem), `OPENAI_OUTAGE.md` (referencing the existing P6-D7 circuit breaker), `BACKUP_RESTORE.md` (RTO 4h / RPO 24h, quarterly drill template — drill itself is operator action, not Kiro). Includes follow-on commit `e2328bf` adding **R-301** to `BACKEND_RISKS.md` (new "300 series" — Redis fail-open allows auth/rate-limit bypass during outage; ACCEPTED for private beta, MUST FIX before public launch). Sandbox suite at this tip: 202 passed / 0 failed / 33 skipped.
+- **Block 4** → PR #16 (P5-C2: pool sizing env-tunable — `db_pool_size`, `db_max_overflow`, `db_pool_timeout`, `db_pool_recycle` with documented Render free × Supabase free math. P8-F1: OpenTelemetry tracing — opt-in via `OTEL_EXPORTER_OTLP_ENDPOINT`; lazy-import contract enforced by test so the OTEL packages never load when disabled. P8-F2 / P6-D10: structured Celery task logs via centralised `_log_task_event` helper carrying `task_id`, `task_name`, `user_id`, `app_id`, `duration_ms`, `outcome`. P8-F3 / P8-F4: `docs/SLO.md` — four SLOs DEFINED (availability 99.5%, write p95 500 ms, read p95 400 ms, error rate <1%/hr), five alerts DOCUMENTED — none ENFORCED yet, wiring is operator action. Sandbox suite at this tip: 210 passed / 0 failed / 33 skipped (+8 from new test files).
+- **Block 5 onward:** **awaiting user spec.** Do NOT pick a block from a candidate list without explicit confirmation.
 
 ### Next block (placeholder)
 
-When the user defines Block 4, append a row to the canonical-stack table here in the same format. The stack-on-tip for Block 4 is **`chore/p9-reliability-incident-response` (`e7555f5`, PR #15)** unless the user says otherwise.
+When the user defines Block 5, append a row to the canonical-stack table here in the same format. The stack-on-tip for Block 5 is **`chore/p8-observability` (`85f862a`, PR #16)** unless the user says otherwise.
 
 ═══════════════════════════════════════════
 APPENDIX — SESSION HONESTY FOOTER
@@ -108,4 +110,4 @@ The user's instruction was "exactly these sections" (1, 2, 3). This footer is **
 
 ### One-line current-state summary (overwrite this every session)
 
-> 2026-05-23 — Block 3 just shipped as PR #15 stacked on PR #14. Canonical stack is 11 PRs deep (PR #3 → #5 → #6 → #7 → #8 → #9 → #10 → #11 → #13 → #14 → #15). Zero merges to `main`. Awaiting Block 4 spec from user.
+> 2026-05-23 — Block 4 just shipped as PR #16 stacked on PR #15. Canonical stack is 12 PRs deep (PR #3 → #5 → #6 → #7 → #8 → #9 → #10 → #11 → #13 → #14 → #15 → #16). Zero merges to `main`. Awaiting Block 5 spec from user.
