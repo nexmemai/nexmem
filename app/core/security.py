@@ -155,3 +155,104 @@ def generate_url_safe_token(nbytes: int = 32) -> tuple[str, str]:
 def hash_url_safe_token(raw_token: str) -> str:
     """Return the storage hash for a single-use email token."""
     return hashlib.sha256(raw_token.encode()).hexdigest()
+
+
+# ── Phase 3 (P3-A6, Block 5): TOTP / 2FA helpers ─────────────────────────────
+# All TOTP helpers import ``pyotp`` lazily so a sandbox without the
+# dep can still ``import app.core.security`` (legacy posture from the
+# Phase-2 era when pyotp was not yet a hard dep). pyotp is now in
+# ``requirements.txt`` so production always has it.
+def generate_totp_secret() -> str:
+    """Return a fresh base32 RFC 6238 TOTP secret.
+
+    Output length matches ``pyotp.random_base32()`` default (32 chars),
+    which fits the ``users.totp_secret VARCHAR(32)`` column.
+    """
+    import pyotp  # noqa: WPS433
+
+    return pyotp.random_base32()
+
+
+def verify_totp_code(secret: str, code: str) -> bool:
+    """Verify a 6-digit TOTP code against ``secret``.
+
+    ``valid_window=1`` accepts the previous, current, and next 30s
+    windows so a user with a slightly skewed clock is not locked out.
+    Returns False on any malformed input rather than raising — the
+    caller turns False into an HTTP 400 / 401.
+    """
+    if not secret or not code:
+        return False
+    import pyotp  # noqa: WPS433
+
+    try:
+        return bool(pyotp.TOTP(secret).verify(code, valid_window=1))
+    except Exception:
+        # pyotp raises for non-base32 secrets or non-digit codes; we
+        # treat that as a verification failure, never as a 500.
+        return False
+
+
+def generate_totp_uri(secret: str, email: str) -> str:
+    """Return the ``otpauth://`` provisioning URI for a QR code.
+
+    ``issuer_name="Nexmem"`` is the label the authenticator app shows
+    next to the entry. The URI is rendered to PNG by the caller (see
+    ``/auth/totp/setup``).
+    """
+    import pyotp  # noqa: WPS433
+
+    return pyotp.TOTP(secret).provisioning_uri(
+        name=email or "user", issuer_name="Nexmem"
+    )
+
+
+# Distinct ``type`` claim so a TOTP session token cannot be substituted
+# for an access or refresh token by any code path that looks at
+# ``payload["type"]``. ``decode_token`` only consults the access-token
+# blocklist when ``type == "access"``, so this token is also outside
+# the blocklist surface (which is what we want — it's already short-
+# lived and single-use by design).
+TOTP_PENDING_TOKEN_TYPE = "totp_pending"
+TOTP_PENDING_TOKEN_TTL_MINUTES = 5
+
+
+def create_totp_session_token(user_id: str) -> str:
+    """Mint a short-lived JWT that proves the bearer has just supplied
+    correct email + password and now owes a TOTP code.
+
+    Lifetime is hardcoded at 5 minutes — long enough for a user to
+    open their authenticator app and type a code, short enough that
+    a leaked token is not useful for long. The token carries no
+    ``access`` scope and is rejected by every protected route.
+    """
+    expire = datetime.utcnow() + timedelta(minutes=TOTP_PENDING_TOKEN_TTL_MINUTES)
+    payload = {
+        "exp": expire,
+        "sub": str(user_id),
+        "type": TOTP_PENDING_TOKEN_TYPE,
+        "scope": TOTP_PENDING_TOKEN_TYPE,
+        "jti": secrets.token_hex(16),
+    }
+    return jwt.encode(payload, settings.secret_key, algorithm=ALGORITHM)
+
+
+def decode_totp_session_token(token: str) -> dict:
+    """Decode a TOTP session token and verify its scope.
+
+    Raises ``jose.JWTError`` (matching ``decode_token``'s contract)
+    on signature failure, expiry, or wrong scope. The /auth/totp/
+    complete-login route turns that into HTTP 401.
+    """
+    payload = jwt.decode(
+        token, settings.secret_key, algorithms=ALLOWED_ALGORITHMS
+    )
+    if payload.get("type") != TOTP_PENDING_TOKEN_TYPE:
+        from jose.exceptions import JWTError
+
+        raise JWTError("not a totp_pending token")
+    if payload.get("scope") != TOTP_PENDING_TOKEN_TYPE:
+        from jose.exceptions import JWTError
+
+        raise JWTError("totp_pending scope missing")
+    return payload

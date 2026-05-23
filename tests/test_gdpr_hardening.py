@@ -1,8 +1,11 @@
-"""Phase 7 GDPR hardening tests (P7-E1, P7-E2).
+"""Phase 7 GDPR hardening tests (P7-E1, P7-E2 / Block 5 P7-E4).
 
 * P7-E1: export route streams NDJSON, never buffers the full payload.
-* P7-E2: delete route is atomic, requires confirmation, and wipes
-  every user-scoped store.
+* P7-E2 → P7-E4 (Block 5): delete route requires confirmation,
+  schedules a soft-delete with a 30-day grace period, and freezes
+  the account immediately. The actual cascade-delete now runs in
+  the ``execute_scheduled_deletions`` Celery task and is covered
+  by ``tests/test_gdpr_soft_delete.py``.
 
 Runs in DEMO_MODE so no Postgres is required.
 """
@@ -117,11 +120,14 @@ class TestAtomicDelete:
         assert r.status_code == 400
         assert "confirm" in r.json()["detail"].lower()
 
-    async def test_delete_with_confirm_wipes_everything(
+    async def test_delete_with_confirm_schedules_soft_delete(
         self, client: AsyncClient
     ):
+        """P7-E4 (Block 5): DELETE no longer wipes immediately —
+        it stamps deletion_scheduled_for and returns the schedule
+        envelope. Memory rows stay until the Celery task runs."""
         user_id, email, headers = await _make_user_with_data(client)
-        # Sanity: stores have data before the delete.
+        # Sanity: stores have data before the request.
         assert demo_db.episodic_store.get(user_id)
         assert demo_db.semantic_store.get(user_id)
         assert demo_db.procedural_store.get(user_id)
@@ -134,21 +140,29 @@ class TestAtomicDelete:
         )
         assert r.status_code == 200, r.text
         body = r.json()
-        assert body["deleted"] is True
-        assert body["authentication_invalidated"] is True
-        counts = body["deleted_counts"]
-        assert counts["episodic_memory"] >= 1
-        assert counts["semantic_memory"] >= 1
-        assert counts["procedural_memory"] == 1
-        assert counts["knowledge_nodes"] >= 1
-        assert counts["users"] == 1
+        # New contract.
+        assert body["scheduled_deletion"] is True
+        assert body["grace_period_days"] == 30
+        assert body["deletion_date"]
+        assert body["cancel_before"] == body["deletion_date"]
+        assert body["cancel_url"].endswith(
+            f"/memory/user/{user_id}/cancel-deletion"
+        )
+        # Old contract MUST NOT leak — a client that still expected
+        # ``deleted: true`` would now miss the soft-delete signal.
+        assert "deleted" not in body
+        assert "deleted_counts" not in body
 
-        # Every store now empty for this user.
-        assert demo_db.episodic_store.get(user_id, []) == []
-        assert demo_db.semantic_store.get(user_id, []) == []
-        assert demo_db.procedural_store.get(user_id) is None
-        assert demo_db.graph_nodes_store.get(user_id, []) == []
-        assert demo_auth.get_user_by_email(email) is None
+        # Memory stores are unchanged — no immediate cascade.
+        assert demo_db.episodic_store.get(user_id)
+        assert demo_db.semantic_store.get(user_id)
+        assert demo_db.graph_nodes_store.get(user_id)
+
+        # User row still exists, but is now inactive.
+        still = demo_auth.get_user_by_email(email)
+        assert still is not None
+        assert still.is_active is False
+        assert still.deletion_scheduled_for is not None
 
     async def test_delete_rejects_other_user(self, client: AsyncClient):
         _, _, headers = await _make_user_with_data(client)
@@ -160,11 +174,12 @@ class TestAtomicDelete:
         assert r.status_code == 403
 
     async def test_delete_invalidates_session(self, client: AsyncClient):
-        """After delete, the access token's user no longer exists in
-        the demo store, so any authenticated route returns 401.
+        """After soft-delete, the access token's user is now is_active=False
+        in the demo store, so authenticated routes return 401.
 
-        This is the practical meaning of
-        ``authentication_invalidated: true`` for the demo path.
+        This is the practical meaning of the freeze part of P7-E4 —
+        even though the row + memories survive the grace period,
+        the user cannot keep using the API in the meantime.
         """
         user_id, _, headers = await _make_user_with_data(client)
         r = await client.delete(
@@ -173,19 +188,25 @@ class TestAtomicDelete:
         )
         assert r.status_code == 200
 
-        # Same access token, post-delete: user is gone, /me 401s.
+        # Same access token, post-soft-delete: user is now inactive,
+        # so /me 401s.
         me = await client.get("/api/v1/auth/me", headers=headers)
         assert me.status_code == 401
 
     async def test_delete_uses_explicit_transaction_in_db_path(self):
         """A reviewer reading the source must see the explicit
-        ``async with db.begin():`` block so a future change cannot
-        accidentally split the deletes across multiple transactions."""
+        ``async with db.begin():`` block on the production soft-delete
+        UPDATE so a future change cannot accidentally split the
+        ``deletion_scheduled_for`` write from the ``is_active`` flip."""
         from app.routers.gdpr import delete_all_memories
         import inspect
 
         src = inspect.getsource(delete_all_memories)
         assert "async with db.begin()" in src
+        # And the route must update the soft-delete columns, not
+        # delete rows — that's the P7-E4 invariant.
+        assert "deletion_scheduled_for" in src
+        assert "is_active=False" in src
 
 
 # ── consent update ───────────────────────────────────────────────────────────

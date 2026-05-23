@@ -1,6 +1,6 @@
 """GDPR data export, deletion, and consent endpoints.
 
-Phase 7 hardening (P7-E1, P7-E2):
+Phase 7 / Block 5 hardening (P7-E1, P7-E2 → P7-E4):
 
 * **P7-E1 streaming export.** ``GET /memory/user/{user_id}/export``
   used to load every row into memory and return a single JSON
@@ -11,12 +11,16 @@ Phase 7 hardening (P7-E1, P7-E2):
   pressure on the server is bounded to a single ORM batch
   (``yield_per``) regardless of total user data volume.
 
-* **P7-E2 single-transaction delete.**
-  ``DELETE /memory/user/{user_id}/all`` now runs inside an explicit
-  ``async with db.begin():`` block so any failure mid-chain rolls
-  back the whole operation. All deletes use core ``delete()``
-  statements consistently — no mixed ORM ``Session.delete`` calls
-  that depend on session-state semantics.
+* **P7-E4 (Block 5) soft-delete grace period.**
+  ``DELETE /memory/user/{user_id}/all`` no longer cascades
+  immediately. It stamps ``users.deletion_scheduled_for`` and
+  flips ``is_active`` to False — the account is frozen at once but
+  every memory row survives for 30 days. The actual cascade runs
+  in the ``execute_scheduled_deletions`` Celery task. A user who
+  changes their mind can call ``POST /memory/user/{id}/cancel-deletion``
+  to roll the schedule back during the grace period; that route
+  uses the dedicated ``get_user_in_grace_period`` dependency
+  because the standard ``get_current_user`` rejects inactive users.
 
 * **Demo-mode parity.** Both routes also work against the in-memory
   demo store so the test suite can exercise them without Postgres,
@@ -30,20 +34,24 @@ Phase 7 hardening (P7-E1, P7-E2):
 from __future__ import annotations
 
 import json
-from datetime import datetime
+import logging
+from datetime import datetime, timedelta, timezone
 from typing import Any, AsyncIterator, Dict, Iterable
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
+from jose import JWTError
 from pydantic import BaseModel
-from sqlalchemy import delete, select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import demo_db
 from app.config import settings
+from app.core import demo_auth
 from app.core.audit_log import record_gdpr_event
 from app.core.deps import get_current_user
+from app.core.security import decode_token
 from app.database import get_db
 from app.models.engram import Engram
 from app.models.memory import (
@@ -53,22 +61,20 @@ from app.models.memory import (
     ProceduralMemory,
     SemanticMemory,
 )
-from app.models.user import APIKey, User
+from app.models.user import User
 
 router = APIRouter(prefix="/memory/user", tags=["gdpr"])
 
+logger = logging.getLogger(__name__)
 
-# Order matters for delete: child rows first, then parents.
-# knowledge_edges → knowledge_nodes (FK), engrams reference episodes
-# in metadata only (no FK), so any order is safe across the rest.
-_DELETE_ORDER = (
-    Engram,
-    SemanticMemory,
-    EpisodicMemory,
-    ProceduralMemory,
-    KnowledgeEdge,
-    KnowledgeNode,
-)
+
+# ── P7-E4 (Block 5): GDPR soft-delete grace period ───────────────────────────
+# A delete request is reversible for ``DELETION_GRACE_DAYS`` days.
+# Past that window, the daily ``execute_scheduled_deletions`` Celery
+# task runs the actual cascade. 30 days matches the GDPR Art. 17
+# "without undue delay" guidance while leaving room for the user to
+# change their mind.
+DELETION_GRACE_DAYS = 30
 
 
 # Models surfaced in /export, with the kind tag the client sees.
@@ -220,158 +226,233 @@ async def delete_all_memories(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Delete every user-scoped row + the user record (P7-E2).
+    """Schedule a soft-delete of every user-scoped row (P7-E4, Block 5).
 
-    The whole operation runs inside one explicit transaction. If any
-    DELETE statement fails (FK violation, deadlock, dropped
-    connection mid-flight), the partial state is rolled back and the
-    client sees a 5xx without observable partial deletion.
+    The previous immediate-cascade behaviour is replaced with a
+    30-day grace period. Calling this route:
 
-    Authentication is invalidated by removing the user (cascade FKs
-    on ``api_keys`` / ``refresh_tokens`` complete the cleanup) plus a
-    belt-and-braces explicit DELETE on ``api_keys``.
+    1. Stamps ``users.deletion_requested_at`` and
+       ``users.deletion_scheduled_for`` on the user row.
+    2. Sets ``users.is_active = False`` so every authenticated route
+       returns 401 from the next request onward — the account is
+       immediately frozen even though no memory rows are erased yet.
+    3. Returns metadata the client can show the user, including a
+       ``cancel_url`` they can hit during the grace period to roll
+       the deletion back.
+
+    The actual cascade across memory tables runs daily inside the
+    ``execute_scheduled_deletions`` Celery task, which scans for
+    rows where ``deletion_scheduled_for <= now()``.
+
+    Idempotent: a second call during the grace period rolls the
+    schedule forward by another 30 days, but does not duplicate
+    rows or audit events — the most recent request always wins.
     """
     if current_user.id != user_id:
         raise HTTPException(
-            status_code=403, detail="Cannot delete another user's data"
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Cannot delete another user's data",
         )
     if (confirm or "").lower() != "true":
         raise HTTPException(
-            status_code=400, detail="Send X-Confirm-Delete: true to confirm"
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Send X-Confirm-Delete: true to confirm",
+        )
+
+    requested_at = datetime.now(timezone.utc)
+    scheduled_for = requested_at + timedelta(days=DELETION_GRACE_DAYS)
+
+    if settings.demo_mode:
+        demo_auth.request_deletion(user_id, requested_at, scheduled_for)
+    else:
+        async with db.begin():
+            await db.execute(
+                update(User)
+                .where(User.id == user_id)
+                .values(
+                    deletion_requested_at=requested_at,
+                    deletion_scheduled_for=scheduled_for,
+                    is_active=False,
+                )
+            )
+
+    await record_gdpr_event(
+        "delete_request",
+        target_user_id=user_id,
+        request=request,
+        payload={
+            "deletion_scheduled_for": scheduled_for.isoformat(),
+            "grace_period_days": DELETION_GRACE_DAYS,
+        },
+    )
+
+    return {
+        "scheduled_deletion": True,
+        "deletion_date": scheduled_for.isoformat(),
+        "grace_period_days": DELETION_GRACE_DAYS,
+        "cancel_before": scheduled_for.isoformat(),
+        "cancel_url": f"/api/v1/memory/user/{user_id}/cancel-deletion",
+    }
+
+
+# ── /cancel-deletion (P7-E4) ─────────────────────────────────────────────────
+async def get_user_in_grace_period(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> User:
+    """Auth dependency that admits users with ``is_active=False`` AS LONG AS
+    they are inside the soft-delete grace period.
+
+    The standard ``get_current_user`` rejects inactive users (which is
+    correct for every other route — a frozen account should not be
+    able to call /memory/episode/write etc.). The cancel-deletion
+    route is the one exception: the user is by definition inactive
+    when they want to cancel. This dependency does the same JWT +
+    blocklist checks but treats ``is_active=False`` as ALLOWED iff
+    ``deletion_scheduled_for`` is set and still in the future. If
+    the grace period has elapsed, the dependency raises 410 Gone so
+    the route handler never sees the user.
+    """
+    auth_header = request.headers.get("Authorization")
+    if not auth_header:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    try:
+        scheme, credentials = auth_header.split()
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication header",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    if scheme.lower() != "bearer":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Cancel-deletion requires a bearer token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    try:
+        payload = decode_token(credentials)
+    except JWTError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    if payload.get("type", "access") != "access":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token type",
+        )
+    sub = payload.get("sub")
+    if not sub:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token",
+        )
+    try:
+        user_uuid = UUID(sub)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid user id in token",
         )
 
     if settings.demo_mode:
-        result = _delete_all_demo(user_id)
-        # P10-H1: audit row written BEFORE the user is wiped from
-        # demo state — otherwise the FK target is gone and the
-        # demo helper would drop the row.
-        await record_gdpr_event(
-            "delete",
-            target_user_id=user_id,
-            request=request,
-            payload={"counts": result.get("deleted_counts", {})},
-        )
-        return result
-
-    delete_counts: dict[str, int] = {}
-
-    # Single-transaction guarantee. ``async with db.begin()`` is a
-    # no-op if a transaction is already open (autobegin), and a
-    # full BEGIN/COMMIT otherwise.
-    async with db.begin():
-        for model in _DELETE_ORDER:
-            result = await db.execute(
-                delete(model).where(model.user_id == user_id)
+        demo_user = demo_auth.get_user_by_id(str(user_uuid))
+        if demo_user is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="User not found",
             )
-            delete_counts[model.__tablename__] = result.rowcount or 0
-
-        api_key_result = await db.execute(
-            delete(APIKey).where(APIKey.user_id == user_id)
+        sched = demo_user.deletion_scheduled_for
+        # Build a lightweight User stub the route handler can use.
+        return User(
+            id=demo_user.id,
+            email=demo_user.email,
+            wallet_address=demo_user.wallet_address,
+            hashed_password=demo_user.hashed_password,
+            is_active=demo_user.is_active,
+            created_at=demo_user.created_at,
+            email_verified_at=demo_user.email_verified_at,
+            deletion_requested_at=demo_user.deletion_requested_at,
+            deletion_scheduled_for=sched,
         )
-        delete_counts["api_keys"] = api_key_result.rowcount or 0
 
-        # Final removal of the user row. The other tables have
-        # ON DELETE CASCADE FK to users.id; we delete them explicitly
-        # above so the rowcounts are observable in the response.
-        user_result = await db.execute(
-            delete(User).where(User.id == user_id)
+    result = await db.execute(select(User).where(User.id == user_uuid))
+    user = result.scalar_one_or_none()
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found",
         )
-        delete_counts["users"] = user_result.rowcount or 0
-
-    # P10-H1: write the audit row only AFTER the transaction
-    # commits successfully. Otherwise we'd record a delete that
-    # might have been rolled back.
-    await _audit_delete(user_id, request, delete_counts)
-
-    return {
-        "deleted": True,
-        "user_id": str(user_id),
-        "authentication_invalidated": True,
-        "deleted_counts": delete_counts,
-    }
+    return user
 
 
-async def _audit_delete(
-    user_id: UUID, request: Request, counts: Dict[str, int]
-) -> None:
-    """Audit the delete *after* the transaction commits.
+@router.post("/{user_id}/cancel-deletion")
+async def cancel_deletion(
+    user_id: UUID,
+    request: Request,
+    current_user: User = Depends(get_user_in_grace_period),
+    db: AsyncSession = Depends(get_db),
+):
+    """Cancel a pending soft-delete and reactivate the account.
 
-    The audit helper opens a fresh session — it cannot piggyback on
-    the (already-committed-and-closed) caller transaction. We call
-    this immediately after commit so a failure here doesn't poison
-    the user-visible response.
+    Returns 400 if there is no pending deletion, 410 if the grace
+    period has already elapsed (deletion has either run or is about
+    to run; cancellation is impossible). On success the route clears
+    both timestamps and flips ``is_active`` back to True. Idempotent
+    only inside the grace period — calling it twice on the same row
+    is a no-op the second time because ``deletion_scheduled_for`` is
+    NULL.
     """
+    if current_user.id != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Cannot cancel another user's deletion",
+        )
+
+    sched = current_user.deletion_scheduled_for
+    if sched is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No pending deletion",
+        )
+    now = datetime.now(timezone.utc)
+    # Postgres returns timezone-aware datetimes; the demo store also
+    # uses timezone-aware UTC (see DELETE handler). Normalise the
+    # rare naive case so the comparison never raises.
+    if sched.tzinfo is None:
+        sched = sched.replace(tzinfo=timezone.utc)
+    if sched <= now:
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail="Grace period expired, deletion already executed",
+        )
+
+    if settings.demo_mode:
+        demo_auth.cancel_deletion(user_id)
+    else:
+        async with db.begin():
+            await db.execute(
+                update(User)
+                .where(User.id == user_id)
+                .values(
+                    deletion_requested_at=None,
+                    deletion_scheduled_for=None,
+                    is_active=True,
+                )
+            )
+
     await record_gdpr_event(
-        "delete",
+        "delete_cancel",
         target_user_id=user_id,
         request=request,
-        payload={"counts": counts},
     )
-
-
-def _delete_all_demo(user_id: UUID) -> dict[str, Any]:
-    """Demo-mode atomic delete: pop every store keyed on ``user_id``.
-
-    Python dict mutations are atomic per-key under the GIL; we never
-    hold partial state — either every store has been popped or none
-    has, because we capture the pre-counts first and only pop after
-    every count is captured.
-    """
-    uid = str(user_id)
-    counts = {
-        "episodic_memory": len(demo_db.episodic_store.get(uid, [])),
-        "semantic_memory": len(demo_db.semantic_store.get(uid, [])),
-        "procedural_memory": 1 if uid in demo_db.procedural_store else 0,
-        "knowledge_nodes": len(demo_db.graph_nodes_store.get(uid, [])),
-        "knowledge_edges": len(demo_db.graph_edges_store.get(uid, [])),
-        "engrams": 0,
-    }
-    demo_db.episodic_store.pop(uid, None)
-    demo_db.semantic_store.pop(uid, None)
-    demo_db.procedural_store.pop(uid, None)
-    demo_db.graph_nodes_store.pop(uid, None)
-    demo_db.graph_edges_store.pop(uid, None)
-
-    # Auth state: remove the user, the email index, every api key,
-    # every refresh token, and any pending verification / reset
-    # tokens for this user. Mirrors the cascade effect of deleting
-    # the users row in production.
-    user_record = demo_db.demo_users.pop(uid, None)
-    api_key_count = 0
-    if user_record is not None:
-        email = (user_record.get("email") or "").lower()
-        if email:
-            demo_db.demo_users_by_email.pop(email, None)
-    for key_id in [
-        kid for kid, rec in demo_db.demo_api_keys.items()
-        if str(rec["user_id"]) == uid
-    ]:
-        demo_db.demo_api_keys.pop(key_id, None)
-        api_key_count += 1
-    for token_hash in [
-        h for h, rec in demo_db.demo_refresh_tokens.items()
-        if str(rec["user_id"]) == uid
-    ]:
-        demo_db.demo_refresh_tokens.pop(token_hash, None)
-    for token_hash in [
-        h for h, rec in demo_db.demo_email_verification_tokens.items()
-        if str(rec["user_id"]) == uid
-    ]:
-        demo_db.demo_email_verification_tokens.pop(token_hash, None)
-    for token_hash in [
-        h for h, rec in demo_db.demo_password_reset_tokens.items()
-        if str(rec["user_id"]) == uid
-    ]:
-        demo_db.demo_password_reset_tokens.pop(token_hash, None)
-
-    counts["api_keys"] = api_key_count
-    counts["users"] = 1 if user_record is not None else 0
-    return {
-        "deleted": True,
-        "user_id": uid,
-        "authentication_invalidated": True,
-        "deleted_counts": counts,
-    }
+    return {"cancelled": True, "account_restored": True}
 
 
 @router.patch("/{user_id}/consent")

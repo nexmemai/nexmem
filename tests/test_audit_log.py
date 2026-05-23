@@ -147,9 +147,13 @@ class TestGDPRAudit:
             "analytics": False,
         }
 
-    async def test_delete_recorded_with_counts(self, client: AsyncClient):
+    async def test_delete_request_recorded_with_schedule(self, client: AsyncClient):
+        """P7-E4 (Block 5): the soft-delete request emits a single
+        ``delete_request`` audit row carrying the schedule, never the
+        per-table deletion counts (those only exist after the
+        Celery task does the actual cascade)."""
         user_id, _, headers = await _register_and_login(client)
-        # Seed a row so the count is observable.
+        # Seed a row so we can confirm it is NOT deleted at request time.
         from app import demo_db
 
         demo_db.create_episodic(user_id, "s", "x")
@@ -159,9 +163,12 @@ class TestGDPRAudit:
             headers={**headers, "X-Confirm-Delete": "true"},
         )
         events = list_demo_gdpr_events(user_id)
-        assert _actions(events) == ["delete"]
-        counts = events[0]["payload"]["counts"]
-        assert counts["episodic_memory"] >= 1
+        assert _actions(events) == ["delete_request"]
+        payload = events[0]["payload"]
+        assert payload["grace_period_days"] == 30
+        assert payload["deletion_scheduled_for"]
+        # The data is still there — the Celery task hasn't run.
+        assert demo_db.episodic_store.get(user_id)
 
 
 # ── P3-A10: API key rotation ────────────────────────────────────────────────

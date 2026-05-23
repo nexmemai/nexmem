@@ -25,6 +25,25 @@ class User(Base):
     # Phase 3 (P3-A1): set when the user confirms their email. Login is
     # gated on this column when EMAIL_VERIFICATION_REQUIRED=true.
     email_verified_at = Column(DateTime(timezone=True), nullable=True)
+    # Phase 3 (P3-A6, Block 5): TOTP / 2FA.
+    # ``totp_secret`` is the base32 RFC 6238 shared secret (32 chars,
+    # never returned to the client after the initial setup response).
+    # ``totp_enabled`` is flipped to True only after the user proves
+    # they can produce a valid code, so a half-completed setup never
+    # locks the user out.
+    totp_secret = Column(String(32), nullable=True, default=None)
+    totp_enabled = Column(Boolean, default=False, nullable=False)
+    # Phase 7 (P7-E4, Block 5): GDPR soft-delete grace period.
+    # ``deletion_requested_at`` is stamped when the user calls
+    # DELETE /memory/user/{id}/all. ``deletion_scheduled_for`` is
+    # ``deletion_requested_at + DELETION_GRACE_DAYS`` and is what the
+    # ``execute_scheduled_deletions`` Celery task scans for. The user
+    # is set ``is_active=False`` at request time so authenticated
+    # routes immediately return 401, but the row + every memory
+    # row stays intact until the grace period elapses, giving the
+    # user a window to cancel.
+    deletion_requested_at = Column(DateTime(timezone=True), nullable=True, default=None)
+    deletion_scheduled_for = Column(DateTime(timezone=True), nullable=True, default=None)
 
 
 class APIKey(Base):

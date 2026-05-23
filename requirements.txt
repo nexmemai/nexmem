@@ -29,6 +29,13 @@ structlog==24.1.0
 prometheus-fastapi-instrumentator==7.0.0
 sentry-sdk[fastapi]==2.1.1
 email-validator==2.3.0
+# ── P3-A6: TOTP / 2FA (Block 5) ───────────────────────────────────────────────
+# pyotp: RFC 6238 TOTP code generation/verification (no native deps).
+# qrcode[pil]: render the otpauth:// URI as a PNG so /auth/totp/setup can
+# return a base64 data URI the client renders inline. The [pil] extra
+# pulls Pillow which IS a wheel-only dep on supported platforms.
+pyotp==2.9.0
+qrcode[pil]==7.4.2
 # ── P8-F1: OpenTelemetry distributed tracing ─────────────────────────────────
 # All four libs are imported lazily in app/main.py only when
 # OTEL_EXPORTER_OTLP_ENDPOINT is set, so a missing OTEL collector does

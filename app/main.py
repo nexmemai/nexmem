@@ -6,7 +6,7 @@ Supports two modes:
 """
 
 from app.config import settings
-from app.routers import episodic, semantic, procedural, graph, rag, auth, health, memory, apps, gdpr
+from app.routers import episodic, semantic, procedural, graph, rag, auth, health, memory, apps, gdpr, totp
 from app.core.rate_limit import limiter
 from app.middleware.body_size_limit import BodySizeLimitMiddleware
 from app.middleware.json_shape_guard import JsonShapeGuardMiddleware
@@ -455,6 +455,7 @@ app.include_router(health.router)
 app.include_router(memory.router, prefix="/api/v1")
 app.include_router(apps.router, prefix="/api/v1")
 app.include_router(gdpr.router, prefix="/api/v1")
+app.include_router(totp.router, prefix="/api/v1")
 
 
 @app.api_route("/", methods=["GET", "HEAD"])
