@@ -235,6 +235,17 @@ class Settings(BaseSettings):
     # mutates settings in-place).
     read_only: bool = False
 
+    # ── Graceful shutdown (P9-G2) ──────────────────────────────────────────────
+    # On SIGTERM / SIGINT, uvicorn stops accepting new connections
+    # immediately. The FastAPI lifespan teardown then waits up to
+    # this many seconds for in-flight requests to finish before it
+    # disposes the DB engine pool and exits. 30s lines up with the
+    # Render / Kubernetes default ``terminationGracePeriodSeconds``
+    # so the orchestrator does not SIGKILL us mid-drain. Operators
+    # can tune via the ``GRACEFUL_SHUTDOWN_TIMEOUT`` env var (e.g.
+    # set to 10s in dev, 60s for long-running RAG calls in prod).
+    graceful_shutdown_timeout: int = 30
+
     # ── Circuit breaker (P6-D7) ────────────────────────────────────────────────
     # Trips after N consecutive failures in W seconds and stays open
     # for C seconds. Wraps every OpenAI call from RAG + consolidation

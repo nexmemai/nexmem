@@ -16,6 +16,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi import _rate_limit_exceeded_handler
 from app.core.logging import configure_logging
 
+import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, Depends, HTTPException
 from app.core.deps import get_current_user
@@ -39,6 +40,20 @@ from prometheus_fastapi_instrumentator import Instrumentator
 configure_logging()
 
 logger = logging.getLogger(__name__)
+
+
+# ── P9-G2: graceful-shutdown in-flight tracking ──────────────────────────────
+# A simple monotonic counter incremented at the start of each HTTP
+# request and decremented after the response is fully produced. The
+# lifespan teardown polls this counter so any request still on a
+# worker when SIGTERM arrives is given up to
+# ``settings.graceful_shutdown_timeout`` seconds to finish before the
+# DB engine pool is disposed and the process exits.
+#
+# asyncio is cooperative — there is no preemption between ``await``
+# boundaries in the same event loop — so plain ``+= 1`` / ``-= 1``
+# on a module-global ``int`` is safe without a lock.
+_inflight_count: int = 0
 
 
 @asynccontextmanager
@@ -99,7 +114,6 @@ async def lifespan(app: FastAPI):
         print(f"  - Graph edges: {stats['graph_edge_count']}")
         print("=" * 60)
     else:
-        import asyncio
         print("Starting with PostgreSQL connection...")
         from app.database import engine
 
@@ -109,7 +123,6 @@ async def lifespan(app: FastAPI):
 
         # Wrap startup tasks in a background task so the server binds the port
         # immediately. The graph rebuild is kicked off asynchronously after startup.
-        import asyncio
 
         async def _background_rebuild():
             """Rebuild NetworkX graph without blocking port binding."""
@@ -146,11 +159,49 @@ async def lifespan(app: FastAPI):
 
     yield
 
+    # ── P9-G2: graceful shutdown ──────────────────────────────────────────────
+    # Sequence:
+    #   1. Uvicorn has already stopped accepting new connections (it
+    #      closes the listen socket on SIGTERM before invoking this
+    #      lifespan teardown). We do not need to do that ourselves.
+    #   2. Wait up to ``settings.graceful_shutdown_timeout`` seconds
+    #      for the per-request middleware counter to drain to zero.
+    #   3. Stop the consolidation scheduler (no-op for Celery beat).
+    #   4. Dispose the SQLAlchemy engine so every pooled connection
+    #      is closed cleanly back to Postgres / PgBouncer.
+    #   5. Log ``graceful shutdown complete`` so the orchestrator
+    #      log scrape can confirm the drain finished before the
+    #      ``terminationGracePeriodSeconds`` ran out.
+    timeout = max(0, int(settings.graceful_shutdown_timeout))
+    if _inflight_count > 0:
+        logger.info(
+            "graceful shutdown: waiting up to %ss for %d in-flight requests",
+            timeout,
+            _inflight_count,
+        )
+        deadline = asyncio.get_event_loop().time() + timeout
+        while _inflight_count > 0 and asyncio.get_event_loop().time() < deadline:
+            await asyncio.sleep(0.05)
+        if _inflight_count > 0:
+            logger.warning(
+                "graceful shutdown: %d in-flight requests did not finish in %ss",
+                _inflight_count,
+                timeout,
+            )
+
     if not settings.demo_mode:
         from app.services.scheduler import stop_scheduler
         stop_scheduler()
         from app.database import engine
-        await engine.dispose()
+        try:
+            await engine.dispose()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("graceful shutdown: engine.dispose() failed: %s", exc)
+
+    logger.info(
+        "graceful shutdown complete (in-flight requests at exit: %d)",
+        _inflight_count,
+    )
 
 
 app = FastAPI(
@@ -321,6 +372,22 @@ async def user_context_middleware(request: Request, call_next):
 async def log_requests(request: Request, call_next):
     """Log all HTTP requests with JSON formatting."""
     return await logging_middleware(request, call_next)
+
+
+@app.middleware("http")
+async def track_inflight_requests(request: Request, call_next):
+    """P9-G2: track in-flight requests so the lifespan teardown can wait.
+
+    Increments ``_inflight_count`` on entry, decrements after the
+    handler returns (or raises). asyncio is cooperative so the
+    naked ``+= 1`` / ``-= 1`` on the module-global is safe.
+    """
+    global _inflight_count
+    _inflight_count += 1
+    try:
+        return await call_next(request)
+    finally:
+        _inflight_count -= 1
 
 # Include routers
 app.include_router(episodic.router, prefix="/api/v1")
