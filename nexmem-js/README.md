@@ -51,6 +51,31 @@ await client.forgetAll(true);
 
 `forgetAll(true)` permanently deletes the authenticated user's memories and invalidates authentication.
 
+## Local development
+
+The SDK defaults to the hosted production backend. To point it at a
+backend you are running locally on `http://localhost:8000`, pass
+`baseUrl` to the constructor:
+
+```ts
+import { MemoryClient } from "nexmem-js";
+
+const client = new MemoryClient({
+  apiKey: "nxm_replace_with_your_local_key",
+  baseUrl: "http://localhost:8000",
+});
+
+await client.remember("User prefers concise answers.");
+const context = await client.recall("how should I answer this user?");
+console.log(context.content);
+```
+
+For a complete copy-pasteable end-to-end run that registers a fresh
+demo user, mints an `nxm_` API key, and drives `remember` + `recall`
+against a local backend, see
+[`examples/javascript_quickstart.mjs`](../examples/javascript_quickstart.mjs)
+and the [`examples/README.md`](../examples/README.md) prereqs.
+
 ## Development
 
 ```bash
@@ -60,6 +85,12 @@ npm pack
 ```
 
 ## Publishing
+
+`nexmem-js` is not on npm yet. Until it ships, build it from this
+repository and import from `dist/` (see the local quickstart above for
+an example). Once the package is published, the install line will be
+`npm install nexmem-js`. The publish step itself is tracked as operator
+action #12 in `KIRO_WORK_LOG.md`:
 
 ```bash
 npm publish --access public
