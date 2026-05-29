@@ -46,20 +46,24 @@ async def get_current_user(
         )
 
     if scheme.lower() == "apikey":
-        # Handle API Key
+        # Handle API Key.
+        # The api_keys SELECT policy (migration 013) is permissive so this
+        # pre-auth lookup works. The follow-up UPDATE of last_used_at must
+        # happen *after* set_rls_context is called, otherwise the policy
+        # `user_id = current_setting(...)` is unsatisfied (GUC is empty)
+        # and the row never updates.
         import hashlib
         key_hash = hashlib.sha256(credentials.encode()).hexdigest()
         result = await db.execute(select(APIKey).where(APIKey.key_hash == key_hash))
         api_key_obj = result.scalar_one_or_none()
-        
+
         if not api_key_obj or not api_key_obj.is_active:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key")
-            
-        api_key_obj.last_used_at = datetime.utcnow()
-        await db.commit()
-        
+
         result = await db.execute(select(User).where(User.id == api_key_obj.user_id))
         user = result.scalar_one_or_none()
+        # last_used_at is bumped below, after RLS context is set.
+        _api_key_to_touch = api_key_obj
         
     elif scheme.lower() == "bearer":
         # Handle JWT
@@ -101,4 +105,12 @@ async def get_current_user(
     request.state.current_user_id = str(user.id)
     set_current_user_id(str(user.id))
     await set_rls_context(db, str(user.id))
+
+    # Bump last_used_at AFTER the RLS GUC is set, so the api_keys
+    # update policy `user_id = current_setting(...)` is satisfied.
+    _api_key_to_touch = locals().get("_api_key_to_touch")
+    if _api_key_to_touch is not None:
+        _api_key_to_touch.last_used_at = datetime.utcnow()
+        await db.commit()
+
     return user

@@ -1,7 +1,9 @@
 import hashlib
 import secrets
+import uuid as _uuid
 from datetime import datetime, timedelta
-from typing import Any, Union, Tuple
+from typing import Any, Tuple, Union
+
 from jose import jwt
 from passlib.context import CryptContext
 
@@ -28,17 +30,36 @@ def create_access_token(
 
 
 def create_refresh_token(
-    subject: Union[str, Any], expires_delta: timedelta = None
-) -> str:
-    """Create a JWT refresh token."""
-    if expires_delta:
-        expire = datetime.utcnow() + expires_delta
-    else:
-        # Default refresh token lifetime: 7 days
-        expire = datetime.utcnow() + timedelta(days=7)
-    to_encode = {"exp": expire, "sub": str(subject), "type": "refresh"}
+    subject: Union[str, Any],
+    *,
+    jti: str | None = None,
+    expires_delta: timedelta | None = None,
+) -> Tuple[str, str, datetime]:
+    """Create a JWT refresh token plus the metadata needed to persist it.
+
+    Returns:
+        (token_string, jti_string, expires_at_utc)
+
+    The jti claim is the primary key of the corresponding refresh_tokens
+    row. The auth router persists that row and uses the jti for
+    revocation lookups (R-H11). Pre-revocation callers that just want
+    a token can ignore the second/third return values.
+    """
+    expire = (
+        datetime.utcnow() + expires_delta
+        if expires_delta is not None
+        else datetime.utcnow() + timedelta(days=7)
+    )
+    if jti is None:
+        jti = str(_uuid.uuid4())
+    to_encode = {
+        "exp": expire,
+        "sub": str(subject),
+        "type": "refresh",
+        "jti": jti,
+    }
     encoded_jwt = jwt.encode(to_encode, settings.secret_key, algorithm=ALGORITHM)
-    return encoded_jwt
+    return encoded_jwt, jti, expire
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:

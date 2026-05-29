@@ -137,10 +137,11 @@ async def rag_chat(
             prompt_tokens = llm_result.get("prompt_tokens", 0)
             completion_tokens = llm_result.get("completion_tokens", 0)
             
-            # Task 4.4: Cost/Token Tracking
+            # Cost / token tracking. app_id flows from the request body, NOT
+            # from the User model (which has no app_id field). R-H2.
             logger.info(
                 "llm_token_usage",
-                app_id=current_user.app_id,
+                app_id=request.app_id,
                 user_id=user_id,
                 endpoint="rag_chat_demo",
                 prompt_tokens=prompt_tokens,
@@ -264,10 +265,11 @@ async def rag_chat(
         )
         reply, prompt_tokens, completion_tokens = llm_result["reply"], llm_result.get("prompt_tokens", 0), llm_result.get("completion_tokens", 0)
         
-        # Task 4.4: Cost/Token Tracking
+        # Cost / token tracking. app_id flows from the request body, NOT
+        # from the User model (which has no app_id field). R-H2.
         logger.info(
             "llm_token_usage",
-            app_id=current_user.app_id,
+            app_id=request.app_id,
             user_id=user_id,
             endpoint="rag_chat_production",
             prompt_tokens=prompt_tokens,

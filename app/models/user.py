@@ -53,3 +53,39 @@ class TokenUsage(Base):
     model = Column(String, nullable=False)
     cost_cents = Column(Integer, default=0, nullable=False)
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+
+
+class RefreshToken(Base):
+    """Server-side record of an issued refresh-token JWT.
+
+    A refresh token's `jti` claim is the UUID stored in `id`. The
+    refresh endpoint looks up the row by jti and rejects any token
+    whose row is missing, revoked, or expired. Rotation marks the
+    old row revoked and creates a new row.
+
+    Phase 2 scope (R-H11):
+      - logout: revoke a single refresh token (POST /auth/logout).
+      - logout-all: revoke every refresh token for the user
+        (POST /auth/logout-all).
+      - rotate-on-use: the refresh endpoint creates a new row and
+        revokes the consumed one.
+
+    Access tokens remain valid until their `exp` claim. We accept
+    that a stolen access token has up to settings.access_token_expire_hours
+    of usefulness; documented in PROJECT_STATUS.md "Known limitations".
+    """
+
+    __tablename__ = "refresh_tokens"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    issued_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    revoked_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    # Free-text label so callers can identify a session ("CLI on laptop").
+    label = Column(String, nullable=True)
