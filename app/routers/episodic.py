@@ -12,6 +12,7 @@ from sqlalchemy import select, desc, func
 from app.database import get_db
 from app.config import settings
 from app.core.deps import get_current_user
+from app.core.quota import enforce_write_quota
 from app.models.user import User
 
 router = APIRouter(prefix="/agents", tags=["episodic"])
@@ -34,7 +35,7 @@ async def create_episode(
     body: EpisodeCreateRequest,
     store_episodic: bool = True,
     app_id: Optional[str] = Query(default=None, description="App ID for scoping"),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(enforce_write_quota),
     db: AsyncSession = Depends(get_db),
 ):
     """Create a new episodic memory entry."""

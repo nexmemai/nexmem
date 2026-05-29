@@ -6,3 +6,4 @@ black==24.4.2
 ruff==0.4.7
 bandit==1.7.9
 locust==2.29.0
+fakeredis==2.23.3
