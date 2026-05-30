@@ -92,6 +92,21 @@ open http://localhost:8501
    streamlit run app.py
    ```
 
+### SDK Quickstarts (Python and JavaScript)
+
+Once the backend is running locally, the fastest way to drive it from a
+client is via one of the SDK quickstarts. Both register a throwaway
+demo user, mint an `nxm_`-prefixed API key, and exercise `remember` +
+`recall` end-to-end:
+
+- Python: [`examples/python_quickstart.py`](./examples/python_quickstart.py)
+- JavaScript / TypeScript: [`examples/javascript_quickstart.mjs`](./examples/javascript_quickstart.mjs)
+- Prereqs and per-language commands: [`examples/README.md`](./examples/README.md)
+
+The SDK source lives under [`nexmem-py/`](./nexmem-py/README.md) and
+[`nexmem-js/`](./nexmem-js/README.md). Neither package is published to
+PyPI / npm yet; install both from this repository for local use.
+
 ## API Endpoints
 
 | Endpoint | Method | Description |
