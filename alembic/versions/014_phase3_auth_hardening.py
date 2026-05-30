@@ -175,7 +175,7 @@ def downgrade() -> None:
     op.drop_index(
         "ix_password_reset_tokens_user_id", table_name="password_reset_tokens"
     )
-    op.drop_table("password_reset_tokens")
+    op.drop_table("password_reset_tokens")  # lint: drop-table-ok
 
     op.drop_index(
         "ix_email_verification_tokens_token_hash",
@@ -185,6 +185,6 @@ def downgrade() -> None:
         "ix_email_verification_tokens_user_id",
         table_name="email_verification_tokens",
     )
-    op.drop_table("email_verification_tokens")
+    op.drop_table("email_verification_tokens")  # lint: drop-table-ok
 
-    op.execute("ALTER TABLE users DROP COLUMN IF EXISTS email_verified_at")
+    op.execute("ALTER TABLE users DROP COLUMN IF EXISTS email_verified_at")  # lint: raw-alter-ok

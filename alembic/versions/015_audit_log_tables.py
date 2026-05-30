@@ -153,7 +153,7 @@ def _drop_audit_table(table: str) -> None:
     op.execute(f"ALTER TABLE {table} DISABLE ROW LEVEL SECURITY")
     op.drop_index(f"ix_{table}_request_id", table_name=table)
     op.drop_index(f"ix_{table}_target_user_id_created_at", table_name=table)
-    op.drop_table(table)
+    op.drop_table(table)  # lint: drop-table-ok
 
 
 def downgrade() -> None:

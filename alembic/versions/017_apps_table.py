@@ -89,8 +89,8 @@ def upgrade() -> None:
     op.create_index("ix_apps_user_id", "apps", ["user_id"])
 
     # RLS — user-scoped (a user sees only their own apps).
-    op.execute("ALTER TABLE apps ENABLE ROW LEVEL SECURITY")
-    op.execute("ALTER TABLE apps FORCE ROW LEVEL SECURITY")
+    op.execute("ALTER TABLE apps ENABLE ROW LEVEL SECURITY")  # lint: raw-alter-ok
+    op.execute("ALTER TABLE apps FORCE ROW LEVEL SECURITY")  # lint: raw-alter-ok
     op.execute("DROP POLICY IF EXISTS apps_user_isolation ON apps")
     op.execute(
         f"""
@@ -105,7 +105,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.execute("DROP POLICY IF EXISTS apps_user_isolation ON apps")
-    op.execute("ALTER TABLE apps NO FORCE ROW LEVEL SECURITY")
-    op.execute("ALTER TABLE apps DISABLE ROW LEVEL SECURITY")
+    op.execute("ALTER TABLE apps NO FORCE ROW LEVEL SECURITY")  # lint: raw-alter-ok
+    op.execute("ALTER TABLE apps DISABLE ROW LEVEL SECURITY")  # lint: raw-alter-ok
     op.drop_index("ix_apps_user_id", table_name="apps")
-    op.drop_table("apps")
+    op.drop_table("apps")  # lint: drop-table-ok

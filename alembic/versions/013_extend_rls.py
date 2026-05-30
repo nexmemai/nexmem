@@ -55,8 +55,8 @@ def upgrade() -> None:
         )
 
     # users: a row is its own owner.
-    op.execute("ALTER TABLE users ENABLE ROW LEVEL SECURITY")
-    op.execute("ALTER TABLE users FORCE ROW LEVEL SECURITY")
+    op.execute("ALTER TABLE users ENABLE ROW LEVEL SECURITY")  # lint: raw-alter-ok
+    op.execute("ALTER TABLE users FORCE ROW LEVEL SECURITY")  # lint: raw-alter-ok
     op.execute(f"DROP POLICY IF EXISTS {USERS_POLICY} ON users")
     op.execute(
         f"""
@@ -93,5 +93,5 @@ def downgrade() -> None:
 
     op.execute("DROP POLICY IF EXISTS users_login_lookup ON users")
     op.execute(f"DROP POLICY IF EXISTS {USERS_POLICY} ON users")
-    op.execute("ALTER TABLE users NO FORCE ROW LEVEL SECURITY")
-    op.execute("ALTER TABLE users DISABLE ROW LEVEL SECURITY")
+    op.execute("ALTER TABLE users NO FORCE ROW LEVEL SECURITY")  # lint: raw-alter-ok
+    op.execute("ALTER TABLE users DISABLE ROW LEVEL SECURITY")  # lint: raw-alter-ok
