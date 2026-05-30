@@ -48,7 +48,15 @@ def create_access_token(
         expire = datetime.utcnow() + timedelta(
             hours=settings.access_token_expire_hours
         )
-    to_encode = {"exp": expire, "sub": str(subject), "type": "access"}
+    # P3-A5: every access token now carries a unique ``jti`` so it
+    # can be added to the per-user blocklist without revoking every
+    # token the user holds. The jti is a 128-bit random hex string.
+    to_encode = {
+        "exp": expire,
+        "sub": str(subject),
+        "type": "access",
+        "jti": secrets.token_hex(16),
+    }
     return jwt.encode(to_encode, settings.secret_key, algorithm=ALGORITHM)
 
 
@@ -85,8 +93,26 @@ def decode_token(token: str) -> dict:
     Whitelists ``HS256`` so a token signed with ``alg=none`` cannot be
     accepted. Raises ``jose.JWTError`` on any failure (signature,
     expiry, malformed). The caller turns that into HTTP 401.
+
+    P3-A5: after signature + expiry validation succeed, the ``jti``
+    claim is checked against the access-token blocklist. A revoked
+    access token raises ``JWTError`` so the rest of the auth path
+    treats it identically to any other invalid token.
     """
-    return jwt.decode(token, settings.secret_key, algorithms=ALLOWED_ALGORITHMS)
+    payload = jwt.decode(
+        token, settings.secret_key, algorithms=ALLOWED_ALGORITHMS
+    )
+    # The blocklist is only meaningful for access tokens. Refresh
+    # tokens are revoked via the database row in ``refresh_tokens``;
+    # checking them again here would be redundant.
+    if payload.get("type") == "access":
+        from app.core.token_blocklist import is_revoked
+
+        if is_revoked(payload.get("jti")):
+            from jose.exceptions import JWTError
+
+            raise JWTError("access token revoked")
+    return payload
 
 
 # ── API keys ─────────────────────────────────────────────────────────────────

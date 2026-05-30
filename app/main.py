@@ -247,6 +247,15 @@ async def user_context_middleware(request: Request, call_next):
     ``algorithms=[ALGORITHM]``, which was correct but inconsistent
     with the rest of the auth path; centralising on one helper means
     a future algorithm rotation only needs to touch one file.
+
+    P3-A5: the decoded payload is stashed on ``request.state`` so
+    routes can read the ``jti`` to revoke "this exact token" when
+    rotating credentials. The middleware does NOT raise on a
+    blocklisted/invalid token here — that decision belongs to
+    ``get_current_user`` which has the full HTTP-401 contract. The
+    middleware only sets the RLS context when the token decoded
+    cleanly (no JWTError), so a blocklisted token never grants RLS
+    visibility.
     """
     user_id = None
     auth_header = request.headers.get("Authorization")
@@ -260,6 +269,7 @@ async def user_context_middleware(request: Request, call_next):
                 # reach this code path with a valid scheme.
                 if payload.get("type", "access") == "access":
                     user_id = payload.get("sub")
+                    request.state.access_token_payload = payload
         except (ValueError, JWTError):
             user_id = None
 
