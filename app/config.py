@@ -154,6 +154,55 @@ class Settings(BaseSettings):
     # ── Redis (rate limiting, quotas, brute-force) ─────────────────────────────
     redis_url: Optional[str] = None
 
+    # ── Database hardening (P5-C1) ─────────────────────────────────────────────
+    # Per-connection PostgreSQL guards. A runaway query without these will
+    # pin a Supabase pooler connection forever, eventually starving the
+    # web service. Both are applied to every new connection via
+    # ``connect_args["server_settings"]`` in app/database.py.
+    #
+    # ``statement_timeout`` (ms): kills any single SQL statement that runs
+    #   longer than this. 30s is generous for OLTP traffic and tight enough
+    #   that a stuck plan does not cascade into a pool exhaustion incident.
+    # ``idle_in_transaction_session_timeout`` (ms): kills a session that
+    #   left a transaction open and went idle. 60s catches client-side
+    #   bugs where ``begin()`` is called without a matching ``commit()``.
+    db_statement_timeout_ms: int = 30_000
+    db_idle_in_transaction_timeout_ms: int = 60_000
+
+    # Pool sizing (P5-C2 documentation; safe to override per deploy).
+    # See render.yaml: workers × pool_size × replicas must stay below the
+    # Supabase pooler max_client_conn (default 200 on Pro tier).
+    db_pool_size: int = 5
+    db_max_overflow: int = 5
+
+    # ── Celery hardening (P6-D2 / D3 / D4) ─────────────────────────────────────
+    # ``celery_task_soft_time_limit`` raises ``SoftTimeLimitExceeded`` inside
+    #   the task so the task can clean up. ``celery_task_time_limit`` is the
+    #   hard kill. Mismatched (soft < hard) is required.
+    # ``celery_worker_max_tasks_per_child`` recycles workers to bound RSS;
+    #   spaCy / sentence-transformers leak under repeated invocation.
+    # ``celery_result_expires`` keeps Redis from filling up with old results.
+    celery_task_soft_time_limit_seconds: int = 240
+    celery_task_time_limit_seconds: int = 300
+    celery_worker_max_tasks_per_child: int = 100
+    celery_result_expires_seconds: int = 3_600
+
+    # ── Request body cap (P7-E5) ───────────────────────────────────────────────
+    # Anything above this is 413 Payload Too Large. Starlette/FastAPI
+    # accept arbitrarily large bodies by default; a 1 GB POST will OOM
+    # the worker before any pydantic validator runs. 5 MB is a generous
+    # ceiling for a memory-write payload.
+    max_request_body_bytes: int = 5 * 1024 * 1024
+
+    # ── Read-only kill switch (P9-G1) ──────────────────────────────────────────
+    # When True, every state-changing HTTP route returns 503. Reads,
+    # health/metrics, and session-revocation endpoints continue to
+    # flow. Defaults to False; operator flips this via the
+    # ``READ_ONLY`` env var during an incident, then restarts the
+    # process (or hits a future ``/admin/read-only`` endpoint that
+    # mutates settings in-place).
+    read_only: bool = False
+
     # ── Write quotas per tier ──────────────────────────────────────────────────
     free_monthly_writes: int = 1000
     starter_monthly_writes: int = 10000
