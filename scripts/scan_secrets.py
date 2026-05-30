@@ -15,8 +15,9 @@ Patterns covered:
       are both ignored).
     * Supabase project hostnames (`*.supabase.co`).
     * The known leaked Supabase project ref / password from the Phase 1
-      incident, kept as an explicit tripwire so the same secret cannot
-      re-enter HEAD.
+      incident, registered as SHA-256 tripwire hashes (NOT cleartext) so the
+      same rotated value cannot silently re-enter a tracked file even though
+      it has been purged from git history.
     * Long base64-like JWTs (3 dot-separated chunks of base64url).
     * GitHub Personal Access Tokens (`ghp_`, `ghs_`, `gho_` etc.).
     * AWS access keys (AKIA / ASIA prefix + 16 chars).
@@ -27,6 +28,7 @@ Patterns covered:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import re
 import subprocess
@@ -73,16 +75,6 @@ PLACEHOLDER_NEEDLES = (
 
 PATTERNS: tuple[Pattern, ...] = (
     Pattern(
-        "incident_known_leaked_supabase_password",
-        re.compile(r"***REDACTED_PASSWORD***", re.IGNORECASE),
-        "the rotated Supabase password from the Phase 1 credential incident",
-    ),
-    Pattern(
-        "incident_known_leaked_supabase_project_ref",
-        re.compile(r"***REDACTED_PROJECT_ID***", re.IGNORECASE),
-        "the Supabase project ref tied to the rotated credential",
-    ),
-    Pattern(
         "supabase_hostname",
         re.compile(r"\b[a-z0-9-]{8,}\.supabase\.co\b", re.IGNORECASE),
         "Supabase project hostname",
@@ -126,6 +118,70 @@ PATTERNS: tuple[Pattern, ...] = (
 def _looks_like_placeholder(line: str) -> bool:
     lowered = line.lower()
     return any(needle.lower() in lowered for needle in PLACEHOLDER_NEEDLES)
+
+
+# ── Incident tripwire (hash-based) ──────────────────────────────────────────
+# The Phase 1 Supabase password + project ref were purged from git history by
+# a git-filter-repo rewrite. We must NOT re-commit the cleartext value (that
+# would defeat the rewrite), but we still want CI to fail loudly if the same
+# rotated value ever reappears in a tracked file. So we register the SHA-256
+# of each known-bad value (lowercased) and hash candidate tokens on the fly.
+#
+# These are one-way hashes: they cannot be reversed to recover the secret, so
+# committing them is safe. A token in a scanned file trips the wire only if
+# its lowercased SHA-256 matches one of these digests.
+INCIDENT_TRIPWIRE_HASHES: dict[str, str] = {
+    # rotated Supabase password — URL-encoded form (as it appeared in URLs)
+    "f98feaeabc16ec17937c05ad76894d092ff9f7aa647f97438af3dc1df61688ec":
+        "the rotated Supabase password from the Phase 1 incident (encoded form)",
+    # rotated Supabase password — decoded form
+    "239488332de32f5e02ef2be442ccc458c1825be9c15d12a85f1d680656da5055":
+        "the rotated Supabase password from the Phase 1 incident (decoded form)",
+    # Supabase project ref tied to the rotated credential
+    "bf71dc4e5b649843d86c833d57b75292b2208518cc93f622907747810a813eb2":
+        "the Supabase project ref tied to the rotated credential",
+}
+
+# Tokens worth hashing. Two complementary tokenizers are needed because the
+# rotated password appears in two shapes:
+#   * URL-embedded encoded form  ``user:Doesitmatter%4082%23@host`` — bounded
+#     by ``:`` and ``@``, so the tokenizer must STOP at ``@`` to extract just
+#     the password. ``_TOKEN_RE_URLSAFE`` excludes ``@ : #``.
+#   * Decoded / standalone form  ``DB_PASSWORD=Doesitmatter@82#`` — the value
+#     itself contains ``@`` and ``#``, so we need a tokenizer that KEEPS them.
+#     ``_TOKEN_RE_RAW`` includes ``@ # %``.
+# The hash comparison is exact, so scanning with both regexes only widens the
+# candidate set; it can never produce a false positive.
+_TOKEN_RE_URLSAFE = re.compile(r"[A-Za-z0-9%._-]{12,48}")
+_TOKEN_RE_RAW = re.compile(r"[A-Za-z0-9%@#._-]{12,48}")
+# Bound the lengths we bother hashing so a giant base64 blob does not cost us
+# thousands of useless digests per line. The known values are 16 and 20 chars.
+_TRIPWIRE_MIN_LEN = 12
+_TRIPWIRE_MAX_LEN = 48
+
+
+# A regex that can never match, used as the ``regex`` field for the synthetic
+# Pattern we emit on a hash-tripwire hit (the dataclass requires the field,
+# but tripwire detection is done by hashing, not by this regex).
+_NEVER_MATCH_RE = re.compile(r"(?!x)x")
+
+
+def _tripwire_hits(line: str) -> list[str]:
+    """Return descriptions for any incident-hash match on this line."""
+    hits: list[str] = []
+    seen: set[str] = set()
+    for token_re in (_TOKEN_RE_URLSAFE, _TOKEN_RE_RAW):
+        for token in token_re.findall(line):
+            if not (_TRIPWIRE_MIN_LEN <= len(token) <= _TRIPWIRE_MAX_LEN):
+                continue
+            if token in seen:
+                continue
+            seen.add(token)
+            digest = hashlib.sha256(token.lower().encode("utf-8")).hexdigest()
+            desc = INCIDENT_TRIPWIRE_HASHES.get(digest)
+            if desc is not None:
+                hits.append(desc)
+    return hits
 
 
 def _git_tracked_files() -> list[Path]:
@@ -195,6 +251,15 @@ def _scan_file(path: Path) -> Iterable[tuple[Pattern, int, str]]:
     for lineno, line in enumerate(text.splitlines(), start=1):
         if _looks_like_placeholder(line):
             continue
+        # Hash-based incident tripwire runs regardless of placeholder needles
+        # above only when the line was not classified as a placeholder; the
+        # rotated value is not a placeholder so this is the right ordering.
+        for desc in _tripwire_hits(line):
+            yield (
+                Pattern("incident_tripwire", _NEVER_MATCH_RE, desc),
+                lineno,
+                line.rstrip(),
+            )
         for pattern in PATTERNS:
             if pattern.regex.search(line):
                 yield pattern, lineno, line.rstrip()
