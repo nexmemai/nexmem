@@ -9,6 +9,7 @@ from app.config import settings
 from app.routers import episodic, semantic, procedural, graph, rag, auth, health, memory, apps, gdpr
 from app.core.rate_limit import limiter
 from app.middleware.body_size_limit import BodySizeLimitMiddleware
+from app.middleware.json_shape_guard import JsonShapeGuardMiddleware
 from app.middleware.read_only_mode import ReadOnlyModeMiddleware
 from slowapi.middleware import SlowAPIMiddleware
 from slowapi.errors import RateLimitExceeded
@@ -167,6 +168,16 @@ app.add_middleware(SlowAPIMiddleware)
 app.add_middleware(
     ReadOnlyModeMiddleware,
     is_read_only=lambda: bool(settings.read_only),
+)
+
+# P7-E6: bound JSON request shape (depth + total node count). Runs
+# AFTER the read-only switch and BEFORE the body cap is added below
+# so a malformed JSON body during a frozen-write window 503s rather
+# than 400s. Skips GET/HEAD/OPTIONS and non-JSON content types.
+app.add_middleware(
+    JsonShapeGuardMiddleware,
+    max_depth=lambda: settings.max_request_json_depth,
+    max_nodes=lambda: settings.max_request_json_nodes,
 )
 
 # P7-E5: cap request bodies. Added LAST (so OUTERMOST) — it must run
