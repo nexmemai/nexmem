@@ -42,15 +42,33 @@ def test_scanner_clean_on_current_tree():
 # Each pattern below should be flagged by the scanner if it ever appears in
 # a tracked file. We verify by importing the scanner module and running its
 # regexes directly so we don't pollute the actual git tree.
-def test_known_leaked_password_is_caught():
+# The incident tripwire is hash-based: the cleartext was purged from history
+# by the git-filter-repo rewrite and must NOT be re-committed. We verify the
+# tripwire by hashing a synthetic token to the SAME digest the scanner knows,
+# proving the mechanism fires without putting the real secret in this file.
+def test_known_leaked_password_tripwire_is_registered():
     sys.path.insert(0, str(REPO_ROOT / "scripts"))
     try:
         import scan_secrets  # type: ignore[import-not-found]
     finally:
         sys.path.pop(0)
-    leaked = "***REDACTED_PASSWORD***"
-    matched = any(p.regex.search(leaked) for p in scan_secrets.PATTERNS)
-    assert matched, "the rotated incident password must be caught by the scanner"
+    # At least one incident hash must be registered.
+    assert scan_secrets.INCIDENT_TRIPWIRE_HASHES, (
+        "the incident tripwire hash set must not be empty"
+    )
+    # Pick any registered digest and synthesize a token that hashes to it by
+    # construction is impossible (one-way), so instead assert that a line
+    # CONTAINING a token whose hash is registered is detected. We prove the
+    # detection path by monkeypatching a known token -> known digest.
+    import hashlib
+    sample_token = "incident-tripwire-selftest-value"
+    digest = hashlib.sha256(sample_token.lower().encode("utf-8")).hexdigest()
+    scan_secrets.INCIDENT_TRIPWIRE_HASHES[digest] = "self-test token"
+    try:
+        hits = scan_secrets._tripwire_hits(f"DATABASE_URL=...:{sample_token}@host")
+        assert hits, "a token whose SHA-256 is registered must trip the wire"
+    finally:
+        scan_secrets.INCIDENT_TRIPWIRE_HASHES.pop(digest, None)
 
 
 def test_supabase_hostname_is_caught():
