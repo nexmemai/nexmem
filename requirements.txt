@@ -29,3 +29,14 @@ structlog==24.1.0
 prometheus-fastapi-instrumentator==7.0.0
 sentry-sdk[fastapi]==2.1.1
 email-validator==2.3.0
+# ── P8-F1: OpenTelemetry distributed tracing ─────────────────────────────────
+# All four libs are imported lazily in app/main.py only when
+# OTEL_EXPORTER_OTLP_ENDPOINT is set, so a missing OTEL collector does
+# not break startup. The deps still sit in this file because the
+# production image must have them available the moment the operator
+# flips the env var on.
+opentelemetry-sdk==1.25.0
+opentelemetry-exporter-otlp==1.25.0
+opentelemetry-instrumentation-fastapi==0.46b0
+opentelemetry-instrumentation-sqlalchemy==0.46b0
+opentelemetry-instrumentation-redis==0.46b0
