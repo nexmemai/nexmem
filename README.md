@@ -27,7 +27,7 @@ A persistent, cross-platform memory system for AI agents and LLMs, structured li
 │                    PostgreSQL + pgvector (Supabase)                      │
 │  ┌─────────────────┐ ┌────────────────┐ ┌──────────────┐ ┌──────────┐  │
 │  │ episodic_memory │ │semantic_memory │ │procedural_mem │ │knowledge │  │
-│  │ (hypertable)    │ │(VECTOR(1536))  │ │    (JSONB)   │ │  _graph  │  │
+│  │ (hypertable)    │ │(VECTOR(384))   │ │    (JSONB)   │ │  _graph  │  │
 │  └─────────────────┘ └────────────────┘ └──────────────┘ └──────────┘  │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
@@ -107,19 +107,41 @@ The SDK source lives under [`nexmem-py/`](./nexmem-py/README.md) and
 [`nexmem-js/`](./nexmem-js/README.md). Neither package is published to
 PyPI / npm yet; install both from this repository for local use.
 
+## Security / Secrets
+
+- **Git history rewrite (complete):** the Phase 1 incident — a leaked Supabase
+  database password, project ref, and a GitHub PAT — was purged from the
+  entire git history with `git-filter-repo` and force-pushed across all
+  branches and tags. No real secrets remain in remote history. See
+  [`HISTORY_REWRITE_COMPLETE.md`](./HISTORY_REWRITE_COMPLETE.md). Collaborators
+  must delete old clones and re-clone.
+- **Secret scanner:** [`scripts/scan_secrets.py`](./scripts/scan_secrets.py)
+  scans every tracked file for credential patterns (Postgres URLs with
+  passwords, Supabase hostnames, OpenAI/GitHub/AWS keys, JWTs) and enforces a
+  **SHA-256 hash-based tripwire** for the known rotated incident value — the
+  cleartext is never stored, but a re-leak of the same value still fails the
+  scan. Run it locally with:
+
+  ```bash
+  python scripts/scan_secrets.py
+  # exits 0 and prints "clean" when no secrets are found; exits 1 on a hit
+  ```
+
+  CI runs the same scanner; the test suite pins its behaviour in
+  `tests/test_secret_scan.py`.
+
 ## API Endpoints
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/v1/agents/{user_id}/episodes` | GET/POST | List/Create episodic memories |
-| `/api/v1/agents/{user_id}/semantics` | GET/POST | List/Create semantic memories |
-| `/api/v1/agents/{user_id}/semantic/search` | POST | Vector similarity search |
-| `/api/v1/agents/{user_id}/procedural/settings` | GET/POST | Get/Upsert procedural memory |
-| `/api/v1/agents/{user_id}/graph/nodes` | GET/POST | List/Create knowledge nodes |
-| `/api/v1/agents/{user_id}/graph/edges` | GET/POST | List/Create knowledge edges |
-| `/api/v1/agents/{user_id}/graph/path` | POST | Find path between nodes |
+| `/api/v1/memory/episode/write` | POST | Unified write for episodic/semantic/procedural/graph |
+| `/api/v1/memory/context` | POST | Unified context assembly |
 | `/api/v1/rag/chat` | POST | RAG-enhanced chat |
-| `/api/v1/memory/stats/{user_id}` | GET | Memory statistics |
+| `/api/v1/memory/user/{id}/export` | GET | Streaming GDPR export |
+| `/api/v1/memory/user/{id}/all` | DELETE | Atomic GDPR soft-delete |
+| `/api/v1/auth/register` | POST | User registration |
+| `/api/v1/auth/login` | POST | User login |
+| `/api/v1/auth/api-keys` | POST | Mint API key |
 
 ## Project Structure
 
