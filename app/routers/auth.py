@@ -47,6 +47,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.core.audit_log import record_auth_event
 from app.core.brute_force import check_not_locked, clear_failures, record_failure
 from app.core import demo_auth
 from app.core.deps import get_current_user
@@ -324,6 +325,15 @@ async def register(
             demo_auth.mark_email_verified(new_user.id)
         if user_data.email:
             await _issue_email_verification_token(None, new_user.id)
+        await record_auth_event(
+            "register",
+            target_user_id=new_user.id,
+            request=request,
+            payload={
+                "has_email": bool(user_data.email),
+                "has_wallet": bool(user_data.wallet_address),
+            },
+        )
         return UserResponse(
             id=new_user.id,
             email=new_user.email,
@@ -364,6 +374,10 @@ async def register(
     await db.refresh(user)
     if user.email:
         await _issue_email_verification_token(db, user.id)
+    await record_auth_event(
+        "register", target_user_id=user.id, request=request,
+        payload={"has_email": bool(user.email), "has_wallet": bool(user.wallet_address)},
+    )
     return user
 
 
@@ -469,18 +483,47 @@ async def login(
 
     if not user or not user.is_active:
         await record_failure(request, credentials.email)
+        if user is not None:
+            await record_auth_event(
+                "login_failure",
+                target_user_id=user.id,
+                request=request,
+                payload={"reason": "inactive"},
+            )
+        # Note: when the email is unknown we deliberately do NOT
+        # write an audit row — we have no target_user_id and the
+        # brute-force tracker already records the email-shaped
+        # signal needed to detect enumeration.
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=INVALID)
     if not user.hashed_password:
+        await record_auth_event(
+            "login_failure",
+            target_user_id=user.id,
+            request=request,
+            payload={"reason": "no_password"},
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Account has no password. Use wallet login or API key.",
         )
     if not verify_password(credentials.password, user.hashed_password):
         await record_failure(request, credentials.email)
+        await record_auth_event(
+            "login_failure",
+            target_user_id=user.id,
+            request=request,
+            payload={"reason": "wrong_password"},
+        )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=INVALID)
 
     # P3-A1: gate on email_verified_at when the operator opts in.
     if settings.email_verification_required and not _user_email_verified(user):
+        await record_auth_event(
+            "login_failure",
+            target_user_id=user.id,
+            request=request,
+            payload={"reason": "email_unverified"},
+        )
         # Use a distinct status so the client can prompt for verification.
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -490,6 +533,9 @@ async def login(
     await clear_failures(credentials.email)
     access, refresh = _issue_token_pair(user.id)
     await _persist_refresh_token(db, user.id, refresh, request)
+    await record_auth_event(
+        "login_success", target_user_id=user.id, request=request
+    )
 
     return TokenResponse(
         access_token=access,
@@ -595,6 +641,7 @@ async def refresh_token(
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
 async def logout(
     body: RefreshRequest,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -602,26 +649,33 @@ async def logout(
     token_hash = hash_refresh_token(body.refresh_token)
     if settings.demo_mode:
         demo_auth.revoke_refresh_token(token_hash, current_user.id)
-        return
-    await db.execute(
-        update(RefreshToken)
-        .where(
-            RefreshToken.token_hash == token_hash,
-            RefreshToken.user_id == current_user.id,
-            RefreshToken.revoked_at.is_(None),
+    else:
+        await db.execute(
+            update(RefreshToken)
+            .where(
+                RefreshToken.token_hash == token_hash,
+                RefreshToken.user_id == current_user.id,
+                RefreshToken.revoked_at.is_(None),
+            )
+            .values(revoked_at=datetime.utcnow())
         )
-        .values(revoked_at=datetime.utcnow())
+        await db.commit()
+    await record_auth_event(
+        "logout", target_user_id=current_user.id, request=request
     )
-    await db.commit()
 
 
 @router.post("/logout-all", status_code=status.HTTP_204_NO_CONTENT)
 async def logout_all_sessions(
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Revoke every refresh token for the current user."""
     await _revoke_all_refresh_tokens(db, current_user.id)
+    await record_auth_event(
+        "logout_all", target_user_id=current_user.id, request=request
+    )
 
 
 # ── /sessions (P3-A4) ────────────────────────────────────────────────────────
@@ -669,6 +723,7 @@ async def list_sessions(
 )
 async def revoke_session(
     session_id: str,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -683,6 +738,12 @@ async def revoke_session(
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="Session not found"
             )
+        await record_auth_event(
+            "session_revoke",
+            target_user_id=current_user.id,
+            request=request,
+            payload={"session_id": str(sid)},
+        )
         return
     result = await db.execute(
         update(RefreshToken)
@@ -699,6 +760,12 @@ async def revoke_session(
             status_code=status.HTTP_404_NOT_FOUND, detail="Session not found"
         )
     await db.commit()
+    await record_auth_event(
+        "session_revoke",
+        target_user_id=current_user.id,
+        request=request,
+        payload={"session_id": str(sid)},
+    )
 
 
 # ── /password-reset (P3-A2) ──────────────────────────────────────────────────
@@ -724,6 +791,11 @@ async def password_reset_request(
 
     if user is not None and user.is_active:
         await _issue_password_reset_token(db, user.id, request)
+        await record_auth_event(
+            "password_reset_request",
+            target_user_id=user.id,
+            request=request,
+        )
     return {"status": "ok"}
 
 
@@ -742,6 +814,11 @@ async def password_reset_confirm(
             raise _generic_token_invalid_exception()
         demo_auth.update_user_password(user_id, get_password_hash(body.new_password))
         demo_auth.revoke_all_refresh_tokens(user_id)
+        await record_auth_event(
+            "password_reset_confirm",
+            target_user_id=user_id,
+            request=request,
+        )
         return {"status": "ok"}
 
     result = await db.execute(
@@ -770,6 +847,11 @@ async def password_reset_confirm(
     )
     await db.commit()
     await _revoke_all_refresh_tokens(db, token.user_id)
+    await record_auth_event(
+        "password_reset_confirm",
+        target_user_id=token.user_id,
+        request=request,
+    )
     return {"status": "ok"}
 
 
@@ -819,6 +901,9 @@ async def change_password(
         await db.commit()
         await _revoke_all_refresh_tokens(db, current_user.id)
     _revoke_request_access_token(request)
+    await record_auth_event(
+        "password_change", target_user_id=current_user.id, request=request
+    )
     return {"status": "ok"}
 
 
@@ -857,12 +942,19 @@ async def revoke_current_token(
 )
 async def create_api_key(
     api_key_data: APIKeyCreate,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     raw_key, key_hash = generate_api_key()
     if settings.demo_mode:
         record = demo_auth.add_api_key(current_user.id, key_hash, api_key_data.name)
+        await record_auth_event(
+            "api_key_create",
+            target_user_id=current_user.id,
+            request=request,
+            payload={"api_key_id": str(record.id), "name": record.name},
+        )
         return APIKeyCreateResponse(
             id=record.id,
             name=record.name,
@@ -880,12 +972,118 @@ async def create_api_key(
     db.add(api_key)
     await db.commit()
     await db.refresh(api_key)
+    await record_auth_event(
+        "api_key_create",
+        target_user_id=current_user.id,
+        request=request,
+        payload={"api_key_id": str(api_key.id), "name": api_key.name},
+    )
     return APIKeyCreateResponse(
         id=api_key.id,
         name=api_key.name,
         api_key=raw_key,
         scopes=api_key.scopes,
         created_at=api_key.created_at,
+    )
+
+
+# P3-A10: atomic API key rotation. The old key continues to work
+# until the operator deletes it; this endpoint returns the new raw
+# key plus the metadata of both. Callers who want a hard
+# rotation should follow up with DELETE /auth/api-keys/{old_id}
+# after they have updated their consumers.
+@router.post(
+    "/api-keys/{key_id}/rotate",
+    response_model=APIKeyCreateResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def rotate_api_key(
+    key_id: str,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Atomically issue a new API key with the same name + scopes.
+
+    Atomicity: the new key is inserted before any other action.
+    If the insert fails the old key is still alive — the worst-case
+    failure mode is "rotate route returned 5xx; nothing changed".
+
+    The response carries the *new* raw key. The old key's hash is
+    not returned. Audit log records both key ids so an operator
+    can reconstruct the rotation chain.
+    """
+    try:
+        old_uuid = uuid.UUID(key_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid key id")
+
+    raw_key, key_hash = generate_api_key()
+
+    if settings.demo_mode:
+        old = demo_auth.get_api_key_by_id(old_uuid, current_user.id)
+        if old is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="API key not found"
+            )
+        new_record = demo_auth.add_api_key(
+            current_user.id, key_hash, old.name
+        )
+        await record_auth_event(
+            "api_key_rotate",
+            target_user_id=current_user.id,
+            request=request,
+            payload={
+                "old_api_key_id": str(old_uuid),
+                "new_api_key_id": str(new_record.id),
+                "name": new_record.name,
+            },
+        )
+        return APIKeyCreateResponse(
+            id=new_record.id,
+            name=new_record.name,
+            api_key=raw_key,
+            scopes=new_record.scopes,
+            created_at=new_record.created_at,
+        )
+
+    result = await db.execute(
+        select(APIKey).where(
+            APIKey.id == old_uuid, APIKey.user_id == current_user.id
+        )
+    )
+    old = result.scalar_one_or_none()
+    if old is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="API key not found"
+        )
+
+    new_key = APIKey(
+        user_id=current_user.id,
+        key_hash=key_hash,
+        name=old.name,
+        scopes=old.scopes,
+        is_active=True,
+    )
+    db.add(new_key)
+    await db.commit()
+    await db.refresh(new_key)
+    await record_auth_event(
+        "api_key_rotate",
+        target_user_id=current_user.id,
+        request=request,
+        payload={
+            "old_api_key_id": str(old_uuid),
+            "new_api_key_id": str(new_key.id),
+            "name": new_key.name,
+        },
+    )
+    return APIKeyCreateResponse(
+        id=new_key.id,
+        name=new_key.name,
+        api_key=raw_key,
+        scopes=new_key.scopes,
+        created_at=new_key.created_at,
     )
 
 
@@ -913,6 +1111,7 @@ async def list_api_keys(
 @router.delete("/api-keys/{key_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_api_key(
     key_id: str,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -926,6 +1125,12 @@ async def delete_api_key(
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="API key not found"
             )
+        await record_auth_event(
+            "api_key_delete",
+            target_user_id=current_user.id,
+            request=request,
+            payload={"api_key_id": str(key_uuid)},
+        )
         return
     result = await db.execute(
         select(APIKey).where(APIKey.id == key_uuid, APIKey.user_id == current_user.id)
@@ -937,6 +1142,12 @@ async def delete_api_key(
         )
     await db.delete(api_key)
     await db.commit()
+    await record_auth_event(
+        "api_key_delete",
+        target_user_id=current_user.id,
+        request=request,
+        payload={"api_key_id": str(key_uuid)},
+    )
 
 
 @router.get("/me", response_model=UserResponse)
