@@ -15,6 +15,23 @@ procedural_store: dict[str, dict] = {}
 graph_nodes_store: dict[str, list[dict]] = {}
 graph_edges_store: dict[str, list[dict]] = {}
 
+# ── Demo-mode auth state ─────────────────────────────────────────────────────
+# A minimal user / api-key / refresh-token store so demo mode can serve the
+# full /auth/* flow used by the integration test suite. Keys are user_id
+# strings (UUIDs). The structure mirrors what the production tables hold.
+demo_users: dict[str, dict] = {}              # user_id -> user record
+demo_users_by_email: dict[str, str] = {}      # email -> user_id
+demo_api_keys: dict[str, dict] = {}           # api_key_id -> record
+demo_refresh_tokens: dict[str, dict] = {}     # token_hash -> record
+
+
+def reset_demo_auth() -> None:
+    """Clear every demo-mode auth store. Safe to call between tests."""
+    demo_users.clear()
+    demo_users_by_email.clear()
+    demo_api_keys.clear()
+    demo_refresh_tokens.clear()
+
 
 def generate_id() -> str:
     return str(uuid.uuid4())

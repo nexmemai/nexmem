@@ -12,6 +12,7 @@ from sqlalchemy import select, text
 from app.database import get_db
 from app.config import settings
 from app.core.deps import get_current_user
+from app.core.quotas import enforce_read_quota
 from app.models.user import User
 from app.services.retriever import get_retrieval_context
 from app.services.reranker import get_top_context
@@ -67,7 +68,7 @@ def _generate_demo_reply(
 
 from app.schemas.memory import RAGRequest, RAGResponse
 
-@router.post("/rag/chat", response_model=RAGResponse)
+@router.post("/rag/chat", response_model=RAGResponse, dependencies=[Depends(enforce_read_quota)])
 async def rag_chat(
     request: RAGRequest,
     current_user: User = Depends(get_current_user),
@@ -136,10 +137,12 @@ async def rag_chat(
             prompt_tokens = llm_result.get("prompt_tokens", 0)
             completion_tokens = llm_result.get("completion_tokens", 0)
             
-            # Task 4.4: Cost/Token Tracking
+            # Task 4.4: Cost/Token Tracking — app_id comes from the request
+            # body (RAGRequest.app_id), not from the User model. The User
+            # model has no app_id attribute; reading it would raise.
             logger.info(
                 "llm_token_usage",
-                app_id=current_user.app_id,
+                app_id=request.app_id,
                 user_id=user_id,
                 endpoint="rag_chat_demo",
                 prompt_tokens=prompt_tokens,
@@ -263,10 +266,11 @@ async def rag_chat(
         )
         reply, prompt_tokens, completion_tokens = llm_result["reply"], llm_result.get("prompt_tokens", 0), llm_result.get("completion_tokens", 0)
         
-        # Task 4.4: Cost/Token Tracking
+        # Task 4.4: Cost/Token Tracking — app_id is request-scoped (see
+        # docs/APP_SCOPING.md). The User model has no app_id attribute.
         logger.info(
             "llm_token_usage",
-            app_id=current_user.app_id,
+            app_id=request.app_id,
             user_id=user_id,
             endpoint="rag_chat_production",
             prompt_tokens=prompt_tokens,

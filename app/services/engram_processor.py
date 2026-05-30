@@ -7,11 +7,17 @@ Six fixes implemented:
 4. Negation detection
 5. Salience scoring
 6. Chunking for long input
+
+Phase 2: NLP work now goes through the bounded ``nlp`` pool in
+app/core/concurrency.py instead of a single-slot semaphore so
+concurrent requests are serviced under a controlled cap.
 """
 
 import asyncio
 import hashlib
+import logging
 import re
+import time
 from datetime import datetime, timezone
 from functools import partial
 from typing import Dict, List, Optional, Any
@@ -21,7 +27,9 @@ import networkx as nx
 
 from app.config import settings
 
-from app.services.embedder import get_nlp_semaphore
+from app.core.concurrency import run_bounded
+
+logger = logging.getLogger(__name__)
 
 
 def _empty_user_context() -> Dict[str, Any]:
@@ -41,10 +49,23 @@ class EngramProcessor:
         import spacy
         from sentence_transformers import SentenceTransformer
 
+        t0 = time.perf_counter()
         self._nlp = spacy.load("en_core_web_sm")
+        spacy_ms = (time.perf_counter() - t0) * 1000
+
+        t1 = time.perf_counter()
         self._embed_model = SentenceTransformer("all-MiniLM-L6-v2")
+        st_ms = (time.perf_counter() - t1) * 1000
+
         self._graph = nx.Graph()
         self._user_contexts: Dict[str, Dict] = preloaded_contexts or {}
+        logger.info(
+            "engram_processor.models_loaded",
+            extra={
+                "spacy_load_ms": round(spacy_ms, 1),
+                "sentence_transformer_load_ms": round(st_ms, 1),
+            },
+        )
 
     def _chunk_text(self, text: str, max_tokens: int = 200) -> List[str]:
         """Split long text into overlapping chunks."""
@@ -320,13 +341,13 @@ class EngramProcessor:
             context["objects"].append(target)
 
     async def process_async(self, text: str, user_id: str) -> Dict[str, Any]:
-        """Async wrapper - processes text without blocking the event loop."""
-        loop = asyncio.get_event_loop()
-        sem = get_nlp_semaphore()
-        async with sem:
-            return await loop.run_in_executor(
-                None, partial(self._process_sync, text, user_id)
-            )
+        """Async wrapper - processes text without blocking the event loop.
+
+        Runs synchronous spaCy + sentence-transformers work under the
+        bounded ``nlp`` pool in app/core/concurrency.py so concurrent
+        requests are capped.
+        """
+        return await run_bounded("nlp", self._process_sync, text, user_id)
 
     def get_compressed_context(self, query: str, user_id: str) -> str:
         """Get compressed context for a user based on their engram history."""

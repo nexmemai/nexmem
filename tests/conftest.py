@@ -56,6 +56,7 @@ def reset_demo_stores():
     demo_db.procedural_store.clear()
     demo_db.graph_nodes_store.clear()
     demo_db.graph_edges_store.clear()
+    demo_db.reset_demo_auth()
     yield
     # Optionally clear again on teardown
     demo_db.episodic_store.clear()
@@ -63,6 +64,7 @@ def reset_demo_stores():
     demo_db.procedural_store.clear()
     demo_db.graph_nodes_store.clear()
     demo_db.graph_edges_store.clear()
+    demo_db.reset_demo_auth()
 
 
 # ── Auth helper ───────────────────────────────────────────────────────────────
@@ -74,7 +76,7 @@ async def auth_headers(client: AsyncClient) -> dict:
     """
     import uuid
     unique = uuid.uuid4().hex[:8]
-    creds = {"email": f"test_{unique}@nexmem.test", "password": "TestPass123!"}
+    creds = {"email": f"test_{unique}@nexmem.example.com", "password": "TestPass123!"}
 
     reg = await client.post("/api/v1/auth/register", json=creds)
     assert reg.status_code in (200, 201), f"Registration failed: {reg.text}"
