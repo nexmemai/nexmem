@@ -95,7 +95,7 @@ async def force_logout_user(
         # access token being killed.
         from app import demo_db
 
-        cutoff = int(datetime.utcnow().timestamp())
+        cutoff = int(datetime.now(timezone.utc).timestamp())
         # Add 1 to the cutoff so a token with iat == now() is also
         # rejected. Without the +1 there is a 1-second window where
         # a token issued in the same wall-clock second could slip
