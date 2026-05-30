@@ -40,6 +40,16 @@ class APIKey(Base):
     is_active = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
     last_used_at = Column(DateTime(timezone=True), nullable=True)
+    # Phase 4 (P4-B2): optional binding to an Apps row. NULL means
+    # "legacy / unbound API key, not yet migrated to first-class apps".
+    # ON DELETE SET NULL: deleting the App must not cascade to deleting
+    # the API key — the operator may want to re-bind the key later.
+    app_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("apps.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
 
 class TokenUsage(Base):

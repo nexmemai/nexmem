@@ -97,6 +97,10 @@ class Settings(BaseSettings):
     password_reset_token_ttl_minutes: int = 30
     # P3-A8: per-IP rate limit on /auth/register. ``slowapi`` syntax.
     register_rate_limit: str = "5/hour"
+    # Phase 4 (P4-B3): per-IP cap on POST /apps/register so a bot farm
+    # cannot create unlimited apps on a single account. Counted via
+    # slowapi (Redis-backed when REDIS_URL is set, else in-memory).
+    app_register_rate_limit: str = "10/hour"
 
     # ── OpenAI ─────────────────────────────────────────────────────────────────
     openai_api_key: str = "sk-placeholder"
