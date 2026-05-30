@@ -1,0 +1,46 @@
+name: CodeQL (P10-H7)
+
+# CodeQL catches data-flow + injection-class issues that bandit
+# doesn't see (path-traversal, hard-coded credentials in arguments,
+# tainted-input → sensitive sink). It is non-blocking initially —
+# the security team triages the alerts, and we promote it to a
+# required check once the noise floor is well understood.
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  schedule:
+    # Weekly full scan on a quiet day so a new CVE in the rules
+    # database surfaces even when no PR has been opened.
+    - cron: "0 4 * * 1"
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language: ["python", "javascript-typescript"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          # ``security-and-quality`` is the most aggressive of the
+          # bundled query suites. We accept the noise — see the
+          # comment at the top of the file.
+          queries: security-and-quality
+
+      - uses: github/codeql-action/autobuild@v3
+
+      - uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"

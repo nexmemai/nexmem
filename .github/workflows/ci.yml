@@ -18,6 +18,49 @@ jobs:
       - name: Run credential scanner
         run: python scripts/scan_secrets.py --ci
 
+  # P5-C6: migration safety lint. Catches DELETE FROM, raw ALTER
+  # TABLE without an opt-out, and missing/empty downgrade() bodies.
+  # See scripts/lint_migrations.py for the full rule set.
+  #
+  # Existing migrations (001..015) predate this lint and are
+  # grandfathered — the job only checks the files this PR changes,
+  # using ``git diff origin/main...HEAD``. New migrations added in
+  # this or any future PR must pass the lint.
+  migration-lint:
+    needs: secret-scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          # Need full history so we can diff against origin/main.
+          fetch-depth: 0
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+      - name: Run migration safety lint on changed files
+        shell: bash
+        run: |
+          set -euo pipefail
+          # On main pushes we lint nothing (the merge has already
+          # been gated by the PR run). On PRs we lint only files in
+          # alembic/versions/ that this PR touches.
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+            BASE_REF="origin/${GITHUB_BASE_REF:-main}"
+            git fetch --no-tags --depth=50 origin "${GITHUB_BASE_REF:-main}" || true
+            CHANGED=$(git diff --name-only --diff-filter=AM "$BASE_REF"...HEAD \
+              -- 'alembic/versions/*.py' || true)
+          else
+            CHANGED=""
+          fi
+          if [ -z "${CHANGED}" ]; then
+            echo "No migration files changed in this PR; nothing to lint."
+            exit 0
+          fi
+          echo "Linting:"
+          echo "${CHANGED}"
+          python scripts/lint_migrations.py ${CHANGED}
+
   lint-and-test:
     needs: secret-scan
     runs-on: ubuntu-latest
