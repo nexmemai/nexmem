@@ -23,6 +23,14 @@ class Engram(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), nullable=False, index=True
     )
+    # Phase 4 / Amendment 2 (P4-B4): optional binding to an Apps row.
+    # NULL means "legacy engram, predates first-class apps". The
+    # migration-020 RLS policy treats NULL as universally visible to
+    # any current_app_id (matching the pattern used for the 5 main
+    # memory tables in migration 019).
+    app_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), nullable=True, index=True
+    )
     engram_id: Mapped[str] = mapped_column(
         String(12), nullable=False, index=True
     )

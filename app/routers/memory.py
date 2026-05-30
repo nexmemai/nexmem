@@ -2,7 +2,7 @@
 
 from typing import Optional, List, Dict, Any
 import asyncio
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request, Response
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, text
@@ -12,6 +12,7 @@ from app.database import get_db
 from app.models.user import User
 from app.core.deps import get_current_user
 from app.core.quotas import enforce_read_quota, enforce_write_quota
+from app.core.rate_limit import limiter
 from app.services.embedder import embedder
 from app.services.engram_processor import engram_processor, decay_score
 from app.config import settings
@@ -287,7 +288,10 @@ async def get_memory_context(
 
 
 @router.post("/episode/write", response_model=EpisodeWriteResponse, dependencies=[Depends(enforce_write_quota)])
+@limiter.limit(settings.episode_write_rate_limit)
 async def write_episode(
+    request: Request,
+    response: Response,
     body: EpisodeWriteRequest,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -351,18 +355,20 @@ async def write_episode(
     try:
         embedding = await embedder.embed(body.content)
     except Exception as exc:
-        logger.warning("Embedding precompute failed: %s", exc)
+        # P7-E9: log the internal cause; respond with a generic 502.
+        logger.warning("Embedding precompute failed: %s", exc, exc_info=True)
         raise HTTPException(
-            status_code=502, detail=f"Embedding service error: {exc}"
+            status_code=502, detail="Embedding service unavailable"
         )
     embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
 
     try:
         engram = await engram_processor.process_async(body.content, user_id)
     except Exception as exc:
-        logger.warning("Engram precompute failed: %s", exc)
+        # P7-E9: log internal cause; generic 502 to client.
+        logger.warning("Engram precompute failed: %s", exc, exc_info=True)
         raise HTTPException(
-            status_code=502, detail=f"Engram processing error: {exc}"
+            status_code=502, detail="Engram processing unavailable"
         )
 
     engram_id = engram.get("engram_id")
@@ -504,10 +510,12 @@ async def write_episode(
                 )
                 edges_created += 1
     except Exception as exc:
+        # P7-E9: full traceback goes to logs / Sentry; client gets a
+        # generic 500 so we never leak SQLAlchemy / asyncpg internals.
         logger.exception("episode write transaction failed; rolled back")
         raise HTTPException(
             status_code=500,
-            detail=f"Episode write failed; no partial state was persisted: {exc}",
+            detail="Episode write failed; no partial state was persisted",
         )
 
     return EpisodeWriteResponse(

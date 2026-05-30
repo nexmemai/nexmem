@@ -101,6 +101,24 @@ class Settings(BaseSettings):
     # cannot create unlimited apps on a single account. Counted via
     # slowapi (Redis-backed when REDIS_URL is set, else in-memory).
     app_register_rate_limit: str = "10/hour"
+    # P7-E7 — per-route rate limits on the routes the Phase-3-plus
+    # plan singles out as "must cap before public beta". The limiter
+    # key is now ``user_id_or_ip`` (P7-E8) so the cap is per
+    # authenticated user when authenticated, per IP when not.
+    #
+    # ``login_rate_limit`` is the credential-stuffing guard. The
+    # per-(email, IP) brute-force protection in app/core/brute_force
+    # still runs underneath this; this one bounds the request rate
+    # before the password-hash CPU is paid.
+    login_rate_limit: str = "20/minute"
+    # ``episode_write_rate_limit`` is the unified write entrypoint.
+    # 100/min/user is generous for a humanlike LLM agent and tight
+    # enough that a runaway client cannot saturate the embedder pool.
+    episode_write_rate_limit: str = "100/minute"
+    # ``rag_chat_rate_limit`` caps the LLM-cost-bearing read path.
+    # 30/min lines up with OpenAI's typical chat-completion rate
+    # without putting a real human user near the cap.
+    rag_chat_rate_limit: str = "30/minute"
 
     # ── OpenAI ─────────────────────────────────────────────────────────────────
     openai_api_key: str = "sk-placeholder"

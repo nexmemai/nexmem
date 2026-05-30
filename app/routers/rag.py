@@ -6,13 +6,14 @@ import time
 import structlog
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, text
 from app.database import get_db
 from app.config import settings
 from app.core.deps import get_current_user
 from app.core.quotas import enforce_read_quota
+from app.core.rate_limit import limiter
 from app.models.user import User
 from app.services.retriever import get_retrieval_context
 from app.services.reranker import get_top_context
@@ -69,24 +70,27 @@ def _generate_demo_reply(
 from app.schemas.memory import RAGRequest, RAGResponse
 
 @router.post("/rag/chat", response_model=RAGResponse, dependencies=[Depends(enforce_read_quota)])
+@limiter.limit(settings.rag_chat_rate_limit)
 async def rag_chat(
-    request: RAGRequest,
+    request: Request,
+    response: Response,
+    body: RAGRequest,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Generate a memory-augmented LLM response."""
     # Validate request user_id matches authenticated user
-    if str(current_user.id) != str(request.user_id):
+    if str(current_user.id) != str(body.user_id):
         raise HTTPException(status_code=403, detail="User ID mismatch")
     
     user_id = str(current_user.id)
-    message = request.message
-    session_id = request.session_id
-    include_episodic = request.include_episodic
-    include_semantic = request.include_semantic
-    include_procedural = request.include_procedural
-    include_graph = request.include_graph
-    top_k = request.top_k
+    message = body.message
+    session_id = body.session_id
+    include_episodic = body.include_episodic
+    include_semantic = body.include_semantic
+    include_procedural = body.include_procedural
+    include_graph = body.include_graph
+    top_k = body.top_k
     start_time = time.time()
 
     episodic_context = []

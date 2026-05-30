@@ -101,7 +101,7 @@ async def test_create_api_key(auth_headers: dict, client: AsyncClient):
     assert response.status_code == 201
     data = response.json()
     assert "api_key" in data
-    assert data["api_key"].startswith("mem_")
+    assert data["api_key"].startswith("nxm_")
     assert data["name"] == "Test CLI Key"
 
 
