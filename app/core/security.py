@@ -51,8 +51,13 @@ def create_access_token(
     # P3-A5: every access token now carries a unique ``jti`` so it
     # can be added to the per-user blocklist without revoking every
     # token the user holds. The jti is a 128-bit random hex string.
+    # P11-I3 (Block 6): also embed ``iat`` (issued-at, unix ts) so an
+    # admin force-logout can revoke ALL tokens issued before a cutoff
+    # without touching the per-token blocklist. Tokens issued after the
+    # cutoff (e.g. a legitimate re-login) authenticate normally.
     to_encode = {
         "exp": expire,
+        "iat": int(datetime.utcnow().timestamp()),
         "sub": str(subject),
         "type": "access",
         "jti": secrets.token_hex(16),
@@ -106,12 +111,32 @@ def decode_token(token: str) -> dict:
     # tokens are revoked via the database row in ``refresh_tokens``;
     # checking them again here would be redundant.
     if payload.get("type") == "access":
-        from app.core.token_blocklist import is_revoked
+        from app.core.token_blocklist import (
+            get_user_revocation_cutoff,
+            is_revoked,
+        )
 
         if is_revoked(payload.get("jti")):
             from jose.exceptions import JWTError
 
             raise JWTError("access token revoked")
+        # P11-I3 (Block 6): user-level force-logout cutoff. An admin
+        # who hits POST /admin/users/{id}/force-logout sets a Redis
+        # cutoff at ``now()``; every access token whose ``iat`` claim
+        # is strictly older than that cutoff is rejected here. Fail
+        # OPEN if Redis is unavailable (R-301 posture) — the cutoff
+        # check returns None and the token passes the rest of
+        # ``decode_token`` like usual. Demo-mode equivalent lives in
+        # ``app.core.deps`` (against ``demo_db.demo_force_logout``)
+        # because security.py intentionally has no demo coupling.
+        sub = payload.get("sub")
+        iat = payload.get("iat")
+        if sub and iat is not None:
+            cutoff = get_user_revocation_cutoff(str(sub))
+            if cutoff is not None and int(iat) < int(cutoff):
+                from jose.exceptions import JWTError
+
+                raise JWTError("user access tokens force-logged-out")
     return payload
 
 
@@ -256,3 +281,38 @@ def decode_totp_session_token(token: str) -> dict:
 
         raise JWTError("totp_pending scope missing")
     return payload
+
+
+
+# ── P11-I2 (Block 6): admin support impersonation ────────────────────────────
+# Distinct ``type`` claim so an impersonation token cannot be substituted
+# anywhere a normal access token is expected. ``decode_token`` only
+# applies the per-user force-logout cutoff to ``type == "access"``,
+# which intentionally lets admin-issued impersonation tokens survive a
+# force-logout — the admin can still investigate the account afterwards.
+# The audit log is the source of truth for who did what during an
+# impersonation session; see ``app.routers.admin.impersonate_user``.
+IMPERSONATION_TOKEN_TYPE = "impersonation"
+IMPERSONATION_TOKEN_TTL_SECONDS = 3600
+
+
+def create_impersonation_token(target_user_id: str) -> str:
+    """Mint a short-lived JWT that lets the bearer act as ``target_user_id``.
+
+    The token carries ``type=impersonation`` and an explicit
+    ``actor="admin"`` claim so any code path that inspects the payload
+    can tell impersonation from a normal user login at a glance.
+    Lifetime is 1 h, hardcoded — long enough for a debugging session,
+    short enough that a leaked token is not interesting tomorrow.
+    """
+    now = datetime.utcnow()
+    expire = now + timedelta(seconds=IMPERSONATION_TOKEN_TTL_SECONDS)
+    payload = {
+        "sub": str(target_user_id),
+        "type": IMPERSONATION_TOKEN_TYPE,
+        "actor": "admin",
+        "exp": expire,
+        "iat": int(now.timestamp()),
+        "jti": secrets.token_hex(16),
+    }
+    return jwt.encode(payload, settings.secret_key, algorithm=ALGORITHM)
