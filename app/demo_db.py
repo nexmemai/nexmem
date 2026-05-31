@@ -15,6 +15,50 @@ procedural_store: dict[str, dict] = {}
 graph_nodes_store: dict[str, list[dict]] = {}
 graph_edges_store: dict[str, list[dict]] = {}
 
+# ── Demo-mode auth state ─────────────────────────────────────────────────────
+# A minimal user / api-key / refresh-token store so demo mode can serve the
+# full /auth/* flow used by the integration test suite. Keys are user_id
+# strings (UUIDs). The structure mirrors what the production tables hold.
+demo_users: dict[str, dict] = {}              # user_id -> user record
+demo_users_by_email: dict[str, str] = {}      # email -> user_id
+demo_api_keys: dict[str, dict] = {}           # api_key_id -> record
+demo_refresh_tokens: dict[str, dict] = {}     # token_hash -> record
+# Phase 3: email-verification + password-reset hashed-token stores.
+demo_email_verification_tokens: dict[str, dict] = {}  # token_hash -> record
+demo_password_reset_tokens: dict[str, dict] = {}      # token_hash -> record
+# Block 6 (P11-I3) — admin force-logout cutoff. user_id -> unix timestamp.
+# An access token whose ``iat`` claim is strictly less than the cutoff is
+# rejected by the demo-mode bearer auth path (see ``app.core.deps``).
+# Tokens issued AFTER force-logout (iat >= cutoff) authenticate normally,
+# so a legitimate re-login still works without the operator clearing the
+# entry by hand. Mirrors the production Redis key
+# ``user_blocklist:<user_id>`` set by ``token_blocklist.revoke_user_tokens``.
+demo_force_logout: dict[str, int] = {}
+# Block 7 (P4-B5) — per-app monthly usage counters. Key is the tuple
+# ``(app_id, month_year)``; value is a dict with the same shape as
+# the production ``app_usage`` row so the demo dashboard endpoint can
+# return it verbatim. Cleared per-test by ``reset_demo_auth`` (below).
+demo_app_usage: dict[tuple[str, str], dict] = {}
+# Block 7 (P4-B6) — per-app suspension state. Key is the app_id
+# string; value is ``{"suspended_at": iso_str, "suspension_reason":
+# str | None}``. Mirrors the columns added in migration 024. Read by
+# the suspension-check dependency in demo mode and written by the
+# admin suspend / unsuspend routes.
+demo_apps_suspension: dict[str, dict] = {}
+
+
+def reset_demo_auth() -> None:
+    """Clear every demo-mode auth store. Safe to call between tests."""
+    demo_users.clear()
+    demo_users_by_email.clear()
+    demo_api_keys.clear()
+    demo_refresh_tokens.clear()
+    demo_email_verification_tokens.clear()
+    demo_password_reset_tokens.clear()
+    demo_force_logout.clear()
+    demo_app_usage.clear()
+    demo_apps_suspension.clear()
+
 
 def generate_id() -> str:
     return str(uuid.uuid4())

@@ -1,0 +1,17 @@
+# Build artefacts
+dist/
+*.tsbuildinfo
+
+# Dependencies
+node_modules/
+
+# Test
+coverage/
+.jest-cache/
+
+# Editor
+.vscode/
+.idea/
+
+# OS
+.DS_Store

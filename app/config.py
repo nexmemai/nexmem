@@ -1,9 +1,34 @@
-"""Application configuration using pydantic-settings."""
+"""Application configuration using pydantic-settings.
 
-from pydantic_settings import BaseSettings
+Phase 2 changes:
+* DATABASE_URL is no longer required when DEMO_MODE=true. The validator
+  only enforces a real URL in non-demo mode (validate_production raises
+  there). This unblocks the test suite, which runs entirely in demo
+  mode and never opens a live connection.
+* validate_production() RAISES on insecure configuration. Phase 1 only
+  logged warnings; Phase 2 makes it a hard fail so production cannot
+  start with a default SECRET_KEY, missing OPENAI_API_KEY, or wide-open
+  ALLOWED_ORIGINS.
+* New per-tier read quota settings used by app/core/quotas.py.
+"""
+
+from __future__ import annotations
+
+import logging
 from typing import List, Optional, Union
 
 from pydantic import field_validator
+from pydantic_settings import BaseSettings
+
+
+logger = logging.getLogger(__name__)
+
+
+# Used as the engine connect URL when DEMO_MODE=true and DATABASE_URL
+# is not set. The engine never opens a connection in demo mode (every
+# router branches on settings.demo_mode), but SQLAlchemy still needs a
+# syntactically valid URL to construct the engine object.
+_DEMO_URL_PLACEHOLDER = "postgresql+asyncpg://demo:demo@localhost:5432/demo"
 
 
 class Settings(BaseSettings):
@@ -13,35 +38,97 @@ class Settings(BaseSettings):
     demo_mode: bool = True
 
     # ── Database ───────────────────────────────────────────────────────────────
-    # Must be set via DATABASE_URL environment variable — no hardcoded default.
+    # Required in production (validate_production raises if missing). In
+    # demo mode it falls back to a placeholder URL that is never used.
     database_url: str = ""
 
     @field_validator("database_url", mode="before")
     @classmethod
-    def assemble_db_connection(cls, v: Optional[str]) -> str:
-        if not isinstance(v, str) or not v.strip():
-            raise ValueError(
-                "DATABASE_URL is not set. Add it to Render env vars or your .env file."
-            )
+    def normalize_db_url(cls, v: Optional[str]) -> str:
+        if v is None:
+            return ""
+        if not isinstance(v, str):
+            v = str(v)
         v = v.strip()
+        if not v:
+            return ""
         # Normalise scheme to asyncpg
         if v.startswith("postgres://"):
             v = v.replace("postgres://", "postgresql+asyncpg://", 1)
         elif v.startswith("postgresql://") and "+asyncpg" not in v:
             v = v.replace("postgresql://", "postgresql+asyncpg://", 1)
-        # asyncpg does NOT accept sslmode or ssl in the query string.
-        # SSL is handled via connect_args={"ssl": True} in database.py.
+        # asyncpg does NOT accept sslmode/ssl in the query string.
+        # SSL is handled via connect_args in app/database.py.
         import re
         v = re.sub(r"[?&]ssl(?:mode)?=[^&]*", "", v)
-        # Clean up any leftover trailing ? or &
         v = v.rstrip("?&")
         return v
+
+    @property
+    def effective_database_url(self) -> str:
+        """Return the URL the engine should bind to.
+
+        In demo mode, returns a placeholder if the real URL is not set.
+        In non-demo mode, returns the real URL (validate_production has
+        already verified it is set).
+        """
+        if self.database_url:
+            return self.database_url
+        if self.demo_mode:
+            return _DEMO_URL_PLACEHOLDER
+        # In production we never reach here because validate_production
+        # has raised already, but be defensive.
+        return _DEMO_URL_PLACEHOLDER
 
     # ── Auth ───────────────────────────────────────────────────────────────────
     # IMPORTANT: Set a strong random value in Render env vars.
     # Generate one with: python -c "import secrets; print(secrets.token_hex(32))"
     secret_key: str = "local-dev-secret-change-this-before-production"
     access_token_expire_hours: int = 4
+    refresh_token_expire_days: int = 7
+
+    # ── Admin endpoints (P11-I2/I3/I4, Block 6) ────────────────────────────────
+    # Static, opaque key used by ``X-Admin-Key`` on /api/v1/admin/*. When
+    # unset (the default) every admin route returns 501 Not Implemented —
+    # making the surface inert by default. Set this to a high-entropy random
+    # value in the deploy environment (NOT in source) before relying on
+    # any admin route. Compared in constant time via ``hmac.compare_digest``
+    # in ``app.core.admin_auth``. Never logged; redacted from Sentry by
+    # the existing scrubbing list (``Authorization``, ``Cookie``).
+    admin_api_key: Optional[str] = None
+
+    # ── Phase 3: email verification + password reset (P3-A1, P3-A2) ────────────
+    # Operator opt-in. Default False keeps backwards-compatible behaviour
+    # for the existing test suite and tiny private beta. The acceptance
+    # criteria in BACKEND_HARDENING_PHASE3_PLUS.md require this to be
+    # ``true`` before billing / public beta.
+    email_verification_required: bool = False
+    email_verification_token_ttl_hours: int = 24
+    password_reset_token_ttl_minutes: int = 30
+    # P3-A8: per-IP rate limit on /auth/register. ``slowapi`` syntax.
+    register_rate_limit: str = "5/hour"
+    # Phase 4 (P4-B3): per-IP cap on POST /apps/register so a bot farm
+    # cannot create unlimited apps on a single account. Counted via
+    # slowapi (Redis-backed when REDIS_URL is set, else in-memory).
+    app_register_rate_limit: str = "10/hour"
+    # P7-E7 — per-route rate limits on the routes the Phase-3-plus
+    # plan singles out as "must cap before public beta". The limiter
+    # key is now ``user_id_or_ip`` (P7-E8) so the cap is per
+    # authenticated user when authenticated, per IP when not.
+    #
+    # ``login_rate_limit`` is the credential-stuffing guard. The
+    # per-(email, IP) brute-force protection in app/core/brute_force
+    # still runs underneath this; this one bounds the request rate
+    # before the password-hash CPU is paid.
+    login_rate_limit: str = "20/minute"
+    # ``episode_write_rate_limit`` is the unified write entrypoint.
+    # 100/min/user is generous for a humanlike LLM agent and tight
+    # enough that a runaway client cannot saturate the embedder pool.
+    episode_write_rate_limit: str = "100/minute"
+    # ``rag_chat_rate_limit`` caps the LLM-cost-bearing read path.
+    # 30/min lines up with OpenAI's typical chat-completion rate
+    # without putting a real human user near the cap.
+    rag_chat_rate_limit: str = "30/minute"
 
     # ── OpenAI ─────────────────────────────────────────────────────────────────
     openai_api_key: str = "sk-placeholder"
@@ -63,10 +150,11 @@ class Settings(BaseSettings):
 
     # ── Observability ──────────────────────────────────────────────────────────
     sentry_dsn: Optional[str] = None
+    sentry_traces_sample_rate: float = 0.1
+    sentry_profiles_sample_rate: float = 0.0
     # Set METRICS_SECRET_KEY in Render to enable the /metrics endpoint.
-    # Use: Authorization: Bearer <METRICS_SECRET_KEY>
     metrics_secret_key: Optional[str] = None
-    
+
     # ── CORS ───────────────────────────────────────────────────────────────────
     allowed_origins: Union[str, List[str]] = ["*"]
 
@@ -80,8 +168,6 @@ class Settings(BaseSettings):
             v = v.strip()
             if not v:
                 return ["*"]
-            
-            # Try parsing as JSON first (to handle ["a", "b"] format)
             if v.startswith("[") and v.endswith("]"):
                 try:
                     import json
@@ -89,63 +175,257 @@ class Settings(BaseSettings):
                     if isinstance(parsed, list):
                         return parsed
                 except Exception:
-                    pass # Fallback to manual cleaning
-
-            # Manual cleaning: remove brackets and quotes
+                    pass
             v = v.replace("[", "").replace("]", "").replace("\"", "").replace("'", "")
-            
-            # Handle comma-separated: "https://a.com, https://b.com"
             return [origin.strip() for origin in v.split(",") if origin.strip()]
         return v
 
     # ── Frontend ───────────────────────────────────────────────────────────────
     frontend_api_url: str = "http://localhost:8000"
 
-    # ── Redis (for rate limiting and quotas) ───────────────────
+    # ── Redis (rate limiting, quotas, brute-force) ─────────────────────────────
     redis_url: Optional[str] = None
 
-    # ── User Tiers (quotas) ───────────────────────────────
+    # ── Database hardening (P5-C1) ─────────────────────────────────────────────
+    # Per-connection PostgreSQL guards. A runaway query without these will
+    # pin a Supabase pooler connection forever, eventually starving the
+    # web service. Both are applied to every new connection via
+    # ``connect_args["server_settings"]`` in app/database.py.
+    #
+    # ``statement_timeout`` (ms): kills any single SQL statement that runs
+    #   longer than this. 30s is generous for OLTP traffic and tight enough
+    #   that a stuck plan does not cascade into a pool exhaustion incident.
+    # ``idle_in_transaction_session_timeout`` (ms): kills a session that
+    #   left a transaction open and went idle. 60s catches client-side
+    #   bugs where ``begin()`` is called without a matching ``commit()``.
+    db_statement_timeout_ms: int = 30_000
+    db_idle_in_transaction_timeout_ms: int = 60_000
+
+    # ── Pool sizing (P5-C2) — env-tunable ─────────────────────────────────────
+    # The Render free / hobby tier runs one worker per replica. The Supabase
+    # free tier permits 20 max client connections. Default sizing below:
+    #   Render free tier: 1 worker, Supabase free: 20 max connections.
+    #   Pool size 5 + max overflow 10 = 15 max per worker.
+    #   Leave 5 for admin/migrations. Total = 20. Safe.
+    # Override via env vars when scaling up: ``DB_POOL_SIZE``,
+    # ``DB_MAX_OVERFLOW``, ``DB_POOL_TIMEOUT``, ``DB_POOL_RECYCLE``.
+    db_pool_size: int = 5
+    db_max_overflow: int = 10
+    # ``db_pool_timeout`` (s): how long a coroutine waits for a free pool slot
+    # before raising ``TimeoutError``. 30s aligns with the per-statement
+    # timeout so a single stuck query cannot starve every concurrent request
+    # for longer than the statement budget plus the wait.
+    db_pool_timeout: int = 30
+    # ``db_pool_recycle`` (s): SQLAlchemy will close + replace any pooled
+    # connection idle for longer than this. 3600s (1 h) is below Supabase's
+    # default ``idle_session_timeout`` so we never receive a "server closed
+    # the connection unexpectedly" error from a stale connection.
+    db_pool_recycle: int = 3600
+
+    # ── Celery hardening (P6-D1 / D2 / D3 / D4 / D5) ───────────────────────────
+    # ``celery_task_soft_time_limit`` raises ``SoftTimeLimitExceeded`` inside
+    #   the task so the task can clean up. ``celery_task_time_limit`` is the
+    #   hard kill. Mismatched (soft < hard) is required.
+    # ``celery_worker_max_tasks_per_child`` recycles workers to bound RSS;
+    #   spaCy / sentence-transformers leak under repeated invocation.
+    # ``celery_result_expires`` keeps Redis from filling up with old results.
+    celery_task_soft_time_limit_seconds: int = 240
+    celery_task_time_limit_seconds: int = 300
+    celery_worker_max_tasks_per_child: int = 100
+    celery_result_expires_seconds: int = 3_600
+    # P6-D5: idempotency lock TTL = task_time_limit + buffer so a hung
+    # task that the broker hard-kills cannot leave a stale lock pinning
+    # the next legitimate enqueue. Buffer is generous (60s) so we err
+    # on the side of refusing duplicates rather than running them.
+    consolidation_lock_ttl_seconds: int = 360
+    # P6-D1: dead-letter queue. Failed-permanently tasks LPUSH onto
+    # this Redis list. ``dlq_max_entries`` trims so the list cannot
+    # exhaust Redis memory under a stuck-task storm.
+    dlq_redis_key: str = "nexmem:dlq:consolidation"
+    dlq_max_entries: int = 1_000
+
+    # ── Request body cap (P7-E5) ───────────────────────────────────────────────
+    # Anything above this is 413 Payload Too Large. Starlette/FastAPI
+    # accept arbitrarily large bodies by default; a 1 GB POST will OOM
+    # the worker before any pydantic validator runs. 5 MB is a generous
+    # ceiling for a memory-write payload.
+    max_request_body_bytes: int = 5 * 1024 * 1024
+
+    # ── Read-only kill switch (P9-G1) ──────────────────────────────────────────
+    # When True, every state-changing HTTP route returns 503. Reads,
+    # health/metrics, and session-revocation endpoints continue to
+    # flow. Defaults to False; operator flips this via the
+    # ``READ_ONLY`` env var during an incident, then restarts the
+    # process (or hits a future ``/admin/read-only`` endpoint that
+    # mutates settings in-place).
+    read_only: bool = False
+
+    # ── Graceful shutdown (P9-G2) ──────────────────────────────────────────────
+    # On SIGTERM / SIGINT, uvicorn stops accepting new connections
+    # immediately. The FastAPI lifespan teardown then waits up to
+    # this many seconds for in-flight requests to finish before it
+    # disposes the DB engine pool and exits. 30s lines up with the
+    # Render / Kubernetes default ``terminationGracePeriodSeconds``
+    # so the orchestrator does not SIGKILL us mid-drain. Operators
+    # can tune via the ``GRACEFUL_SHUTDOWN_TIMEOUT`` env var (e.g.
+    # set to 10s in dev, 60s for long-running RAG calls in prod).
+    graceful_shutdown_timeout: int = 30
+
+    # ── OpenTelemetry distributed tracing (P8-F1) ──────────────────────────────
+    # When ``otel_exporter_otlp_endpoint`` is unset (the default),
+    # tracing is **disabled** and no opentelemetry packages need to be
+    # importable at runtime. The lifespan startup logs the disabled
+    # status so the operator can confirm the wiring is intentional.
+    #
+    # When set (e.g. ``OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317``),
+    # the lifespan instruments FastAPI, SQLAlchemy, and Redis with the
+    # OTLP gRPC exporter. The instrumentation is process-global, so it
+    # cannot be safely undone after startup — uninstrumenting requires
+    # a process restart.
+    #
+    # ``otel_service_name`` populates the ``service.name`` resource
+    # attribute on every emitted span. Defaults to ``nexmem``; override
+    # per environment (``nexmem-staging``, ``nexmem-prod``) to keep
+    # spans separable in the collector backend.
+    otel_exporter_otlp_endpoint: Optional[str] = None
+    otel_service_name: str = "nexmem"
+
+    # ── Circuit breaker (P6-D7) ────────────────────────────────────────────────
+    # Trips after N consecutive failures in W seconds and stays open
+    # for C seconds. Wraps every OpenAI call from RAG + consolidation
+    # so a global OpenAI outage cannot saturate the workers with
+    # tenacity-retry storms.
+    circuit_openai_failure_threshold: int = 5
+    circuit_openai_cooldown_seconds: int = 60
+    circuit_openai_failure_window_seconds: int = 60
+
+    # ── Account lockout escalation (P3-A7) ─────────────────────────────────────
+    # Beyond the per-(email, IP) lockout in app/core/brute_force.py,
+    # escalate when a SINGLE user accumulates many failures across
+    # many IPs in a window — that pattern points at distributed
+    # credential stuffing rather than a forgetful user. The default
+    # is conservative; tighten for paid tiers.
+    account_lockout_escalation_threshold: int = 50
+    account_lockout_escalation_window_seconds: int = 3600
+    account_lockout_escalation_seconds: int = 86400  # 24 h
+
+    # ── JSON request shape guards (P7-E6) ──────────────────────────────────────
+    # Bound nested-object depth and total node count so a deeply
+    # nested or massively wide JSON body cannot pin pydantic / json
+    # parsing on a single request. The body cap (P7-E5) bounds the
+    # raw bytes; this bounds CPU.
+    max_request_json_depth: int = 32
+    max_request_json_nodes: int = 10_000
+
+    # ── Write quotas per tier ──────────────────────────────────────────────────
     free_monthly_writes: int = 1000
     starter_monthly_writes: int = 10000
     pro_monthly_writes: int = 100000
     enterprise_monthly_writes: int = 1000000
 
+    # ── Read quotas per tier (Phase 2) ─────────────────────────────────────────
+    free_monthly_reads: int = 10000
+    starter_monthly_reads: int = 100000
+    pro_monthly_reads: int = 1000000
+    enterprise_monthly_reads: int = 10000000
+
+    # ── Celery backpressure (P6-D8, Block 7) ───────────────────────────────────
+    # When the Celery default queue (LLEN of the ``celery`` Redis list)
+    # exceeds this depth, write routes that trigger consolidation 503
+    # via the ``check_queue_pressure`` dependency. Tune via the
+    # ``CELERY_QUEUE_DEPTH_LIMIT`` env var. Default 1000 lines up with
+    # ~1 worker × max_tasks_per_child=100 × 10 minutes of build-up
+    # before the user-visible slowdown becomes worse than the
+    # cooperative 503. Set to 0 to disable backpressure entirely.
+    celery_queue_depth_limit: int = 1000
+
+    # ── Data retention (P10-H3, Block 7) ───────────────────────────────────────
+    # Per-table retention in **days**. ``0`` is the documented sentinel
+    # for "keep forever" — the ``enforce_data_retention`` Celery task
+    # short-circuits any table whose setting is 0. Defaults reflect the
+    # private-beta policy:
+    #
+    #   episodic   365 days  — raw conversation turns; one year is
+    #                          the default cap most users expect for a
+    #                          conversational memory.
+    #   semantic     0 days  — distilled knowledge layer; never auto-
+    #                          delete. Operator can set a cap if their
+    #                          data class requires it.
+    #   engrams      0 days  — same posture as semantic.
+    #   audit_log  730 days  — 2 years. Aligns with the most common
+    #                          SOC2 / ISO 27001 retention floors.
+    #
+    # Operator overrides via env: ``RETENTION_EPISODIC_DAYS``,
+    # ``RETENTION_SEMANTIC_DAYS``, ``RETENTION_ENGRAM_DAYS``,
+    # ``RETENTION_AUDIT_LOG_DAYS``. The Celery Beat schedule entry
+    # for ``enforce_data_retention`` is operator-owned; we deliberately
+    # do not enable it by default to avoid surprise deletions on
+    # existing deployments. See ``docs/DATA_RETENTION.md``.
+    retention_episodic_days: int = 365
+    retention_semantic_days: int = 0
+    retention_engram_days: int = 0
+    retention_audit_log_days: int = 730
+
     def validate_production(self) -> None:
-        """Strict validation for production mode — raises on insecure config."""
+        """Strict validation for production mode — RAISES on insecure config.
+
+        Called from the FastAPI lifespan (app.main.lifespan) so any
+        misconfiguration kills the process at startup instead of silently
+        running with insecure defaults.
+        """
         if self.demo_mode:
             return
 
-        errors = []
+        errors: list[str] = []
+        warnings: list[str] = []
+
+        if not self.database_url:
+            errors.append(
+                "DATABASE_URL is required in non-demo mode. Set it in your "
+                "deploy environment (Render Dashboard, etc.) before starting."
+            )
 
         if (
             self.secret_key.startswith("local-dev")
-            or self.secret_key == "changeme_in_production"
+            or self.secret_key in ("changeme_in_production", "ci-test-secret")
             or len(self.secret_key) < 32
         ):
-            import logging
-            logging.getLogger(__name__).warning(
-                "SECRET_KEY is too weak or is the default value. "
-                "Please generate a strong one with: python -c \"import secrets; print(secrets.token_hex(32))\""
+            errors.append(
+                "SECRET_KEY is missing, default, or shorter than 32 characters. "
+                "Generate one with: python -c 'import secrets; print(secrets.token_hex(32))'"
             )
 
-        if not self.openai_api_key or self.openai_api_key == "sk-placeholder":
-            import logging
-            logging.getLogger(__name__).warning(
-                "OPENAI_API_KEY is missing or placeholder — AI summarisation features disabled."
+        if not self.openai_api_key or self.openai_api_key in ("sk-placeholder", "sk-test-placeholder"):
+            warnings.append(
+                "OPENAI_API_KEY is missing or a placeholder; AI summarisation "
+                "and RAG features will degrade to safe fallbacks."
             )
 
-        if self.allowed_origins == ["*"]:
-            import logging
-            logging.getLogger(__name__).warning(
-                "ALLOWED_ORIGINS is '*' which allows any origin. "
-                "Set it to your frontend domain(s) in Render env vars."
+        if list(self.allowed_origins) == ["*"]:
+            errors.append(
+                "ALLOWED_ORIGINS is '*' which permits any origin. Set it to "
+                "the explicit list of allowed frontend domains."
             )
 
-        # Removed the RuntimeError raise to prevent startup hangs.
-        pass
+        if not self.redis_url:
+            warnings.append(
+                "REDIS_URL is unset. Rate limiting, brute-force protection, "
+                "and quotas will degrade to in-memory and fail closed on a "
+                "per-process basis. This is unsafe for multi-replica deployments."
+            )
+
+        for warning in warnings:
+            logger.warning("config: %s", warning)
+
+        if errors:
+            for err in errors:
+                logger.error("config: %s", err)
+            raise RuntimeError(
+                "Refusing to start in non-demo mode with insecure configuration: "
+                + " | ".join(errors)
+            )
 
     class Config:
-        # Reads .env first, then .env.local for local overrides
         env_file = [".env", ".env.local"]
         env_file_encoding = "utf-8"
         extra = "ignore"

@@ -5,25 +5,30 @@ build-backend = "hatchling.build"
 [project]
 name = "nexmem-py"
 version = "0.1.0"
-description = "Python SDK for the NexMem memory API"
+description = "Python SDK for the Nexmem AI memory layer"
 readme = "README.md"
+# 3.10 floor reflects the code's actual requirement: ``models.py`` uses
+# ``@dataclass(slots=True)`` which is 3.10+. Lowering to 3.9 would silently
+# break import on 3.9 even though ``from __future__ import annotations``
+# would let the type hints survive.
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [
-  { name = "NexMem" }
+  { name = "Nexmem", email = "api@nexmem.ai" }
 ]
-keywords = ["memory", "llm", "ai", "sdk"]
+keywords = ["ai", "memory", "agents", "llm", "langchain"]
 classifiers = [
-  "Development Status :: 3 - Alpha",
+  "Development Status :: 4 - Beta",
   "Intended Audience :: Developers",
   "License :: OSI Approved :: MIT License",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
+  "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-  "httpx>=0.27,<1",
+  "httpx>=0.24.0,<1",
 ]
 
 [project.optional-dependencies]
@@ -31,12 +36,14 @@ dev = [
   "build>=1.2",
   "pytest>=8",
   "pytest-asyncio>=0.23",
+  "respx>=0.20",
   "twine>=5",
 ]
 
 [project.urls]
-Homepage = "https://github.com/nexmem/nexmem-py"
-Repository = "https://github.com/nexmem/nexmem-py"
+Homepage = "https://nexmem.ai"
+Documentation = "https://docs.nexmem.ai"
+Repository = "https://github.com/nexmemai/nexmem"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

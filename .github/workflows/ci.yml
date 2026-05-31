@@ -7,59 +7,245 @@ on:
     branches: [ "main" ]
 
 jobs:
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+      - name: Run credential scanner
+        run: python scripts/scan_secrets.py --ci
+
+  # P5-C6: migration safety lint. Catches DELETE FROM, raw ALTER
+  # TABLE without an opt-out, and missing/empty downgrade() bodies.
+  # See scripts/lint_migrations.py for the full rule set.
+  #
+  # Existing migrations (001..015) predate this lint and are
+  # grandfathered — the job only checks the files this PR changes,
+  # using ``git diff origin/main...HEAD``. New migrations added in
+  # this or any future PR must pass the lint.
+  migration-lint:
+    needs: secret-scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          # Need full history so we can diff against origin/main.
+          fetch-depth: 0
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+      - name: Run migration safety lint on changed files
+        shell: bash
+        run: |
+          set -euo pipefail
+          # On main pushes we lint nothing (the merge has already
+          # been gated by the PR run). On PRs we lint only files in
+          # alembic/versions/ that this PR touches.
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+            BASE_REF="origin/${GITHUB_BASE_REF:-main}"
+            git fetch --no-tags --depth=50 origin "${GITHUB_BASE_REF:-main}" || true
+            CHANGED=$(git diff --name-only --diff-filter=AM "$BASE_REF"...HEAD \
+              -- 'alembic/versions/*.py' || true)
+          else
+            CHANGED=""
+          fi
+          if [ -z "${CHANGED}" ]; then
+            echo "No migration files changed in this PR; nothing to lint."
+            exit 0
+          fi
+          echo "Linting:"
+          echo "${CHANGED}"
+          python scripts/lint_migrations.py ${CHANGED}
+
   lint-and-test:
+    needs: secret-scan
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v3
-    
+
     - name: Set up Python 3.11
       uses: actions/setup-python@v4
       with:
         python-version: "3.11"
         cache: "pip"
-        
+
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
         pip install -r requirements-dev.txt
-        
+
     - name: Lint with flake8
       run: |
+        pip install flake8
         # stop the build if there are Python syntax errors or undefined names
         flake8 app --count --select=E9,F63,F7,F82 --show-source --statistics
         # exit-zero treats all errors as warnings
         flake8 app --count --exit-zero --max-complexity=10 --max-line-length=120 --statistics
-        
-    - name: Type check with mypy
-      run: |
-        mypy app --ignore-missing-imports || true
-        
-    - name: Run tests (demo mode — no DB required)
+
+    - name: Run unit tests (demo mode — no DB required)
       env:
         DEMO_MODE: "true"
-        SECRET_KEY: "ci-test-secret"
+        SECRET_KEY: "ci-test-secret-key-must-be-at-least-32-characters-long"
         OPENAI_API_KEY: "sk-test-placeholder"
       run: |
-        pytest -v --tb=short
-        
+        pip install pytest-cov
+        pytest -v --tb=short -m "not slow and not integration" \
+          --cov=app --cov-report=term-missing --cov-report=xml
+
+    - name: Upload coverage report
+      uses: actions/upload-artifact@v4
+      with:
+        name: coverage-unit
+        path: coverage.xml
+        if-no-files-found: ignore
+
+  integration-tests:
+    needs: lint-and-test
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: nexmem_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Run integration tests
+        env:
+          # Integration tests speak to the service containers above.
+          DEMO_MODE: "false"
+          DATABASE_URL: "postgresql+asyncpg://postgres:postgres@localhost:5432/nexmem_test"
+          REDIS_URL: "redis://localhost:6379/0"
+          SECRET_KEY: "ci-integration-secret-key-at-least-32-characters-long-x"
+          OPENAI_API_KEY: "sk-test-placeholder"
+          ALLOWED_ORIGINS: "http://localhost:3000"
+          ENVIRONMENT: "development"
+          RUN_DB_TESTS: "1"
+        run: |
+          pytest -v --tb=short -m integration
+
   security-audit:
     needs: lint-and-test
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
-    
-    - name: Set up Python 3.11
-      uses: actions/setup-python@v4
-      with:
-        python-version: "3.11"
-        cache: "pip"
-        
-    - name: Install bandit
-      run: pip install bandit==1.7.9
-      
-    - name: Run SAST security audit
-      run: python tests/run_security_audit.py
+      - uses: actions/checkout@v3
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+          cache: "pip"
+      - name: Install bandit
+        run: pip install bandit==1.7.9
+      - name: Run SAST security audit
+        run: python tests/run_security_audit.py
+
+  # P10-H6: dependency vulnerability scan. Blocks the merge on HIGH
+  # or CRITICAL CVEs in our pinned dependencies. ``--strict`` is
+  # explicitly NOT set so the job runs to completion and reports all
+  # findings; ``--vulnerability-service osv`` is faster and more
+  # comprehensive than the deprecated ``pyup`` source.
+  dependency-audit:
+    needs: lint-and-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+          cache: "pip"
+      - name: Install pip-audit
+        run: pip install pip-audit==2.7.3
+      - name: Run pip-audit on production deps
+        # ``-r requirements.txt`` runs against the pinned production
+        # set, NOT the dev tools. A finding here is what would ship
+        # to a customer.
+        run: pip-audit -r requirements.txt --disable-pip --vulnerability-service osv
+
+  # P5-C5: Alembic forward+back round-trip. Runs every migration
+  # ``upgrade head -> downgrade base -> upgrade head`` against a
+  # disposable Postgres so a missing ``downgrade()`` or asymmetric
+  # DDL is caught on the PR rather than during an emergency
+  # rollback.
+  alembic-roundtrip:
+    needs: lint-and-test
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: nexmem_alembic
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+          cache: "pip"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run round-trip
+        env:
+          # Run in non-demo mode so alembic actually targets Postgres.
+          DEMO_MODE: "false"
+          DATABASE_URL: "postgresql+asyncpg://postgres:postgres@localhost:5432/nexmem_alembic"
+          SECRET_KEY: "ci-roundtrip-secret-key-at-least-32-characters-long-x"
+          OPENAI_API_KEY: "sk-test-placeholder"
+          ALLOWED_ORIGINS: "http://localhost:3000"
+          ENVIRONMENT: "development"
+        run: |
+          # Forward.
+          alembic upgrade head
+          # Backward (full chain).
+          alembic downgrade base
+          # Forward again — must succeed without manual cleanup.
+          alembic upgrade head
 
   docker-build:
     needs: lint-and-test
@@ -67,10 +253,10 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
     - uses: actions/checkout@v3
-    
+
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v2
-      
+
     - name: Build Docker Image
       uses: docker/build-push-action@v4
       with:

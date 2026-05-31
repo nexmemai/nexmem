@@ -1,5 +1,6 @@
 """Knowledge graph (associative memory) API endpoints."""
 
+import logging
 import uuid
 from collections import deque
 from typing import Optional
@@ -11,7 +12,10 @@ from sqlalchemy import select
 from app.database import get_db
 from app.config import settings
 from app.core.deps import get_current_user
+from app.core.quotas import enforce_write_quota
 from app.models.user import User
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/agents", tags=["associative"])
 
@@ -39,7 +43,7 @@ class PathRequest(BaseModel):
 # Node Endpoints
 # ==========================================
 
-@router.post("/{user_id}/graph/nodes")
+@router.post("/{user_id}/graph/nodes", dependencies=[Depends(enforce_write_quota)])
 async def create_node(
     user_id: str,
     body: NodeCreateRequest,
@@ -163,7 +167,7 @@ async def delete_node(
 
 # ── Edge Endpoints ─────────────────────────────────────────────────────────────
 
-@router.post("/{user_id}/graph/edges")
+@router.post("/{user_id}/graph/edges", dependencies=[Depends(enforce_write_quota)])
 async def create_edge(
     user_id: str,
     body: EdgeCreateRequest,
@@ -186,7 +190,9 @@ async def create_edge(
                 body.relation, body.weight, body.metadata,
             )
         except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
+            # P7-E9: do not echo internal exception text to the client.
+            logger.info("demo create_edge rejected: %s", e)
+            raise HTTPException(status_code=400, detail="Invalid edge request")
 
     from app.models.memory import KnowledgeNode
     from app.services.consolidation import persist_edge

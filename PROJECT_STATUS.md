@@ -1,105 +1,275 @@
-# Nexmem Project Status Report
+# Nexmem Project Status
 
-**Date:** April 30, 2026
-**Status:** Alpha / Pre-Production
-**Purpose:** External Technical Review & Roadmap Alignment
+**Last reviewed:** 2026-05-22 (end of Phase 3 — auth & session hardening).
+**Stage:** pre-private-beta. Has not yet served real user traffic.
 
----
-
-## 1. Project Identity & Purpose
-Nexmem is a high-performance, persistent AI Memory Layer designed for LLM agents. It provides a de-coupled memory infrastructure that mimics human cognitive processes (episodic, semantic, procedural, and associative memory) to enable agents with long-term retention, cross-session continuity, and multi-tenant isolation.
-
----
-
-## 2. Technology Stack
-
-### Backend Infrastructure
-- **Core Framework:** FastAPI (Python 3.10+)
-- **Primary Database:** PostgreSQL 16+ with `pgvector` (Vector Search), `pg_trgm` (Keyword Search), and RLS (Row Level Security).
-- **Caching/Task Queue:** Redis (Used for Celery brokers and rate-limiting).
-- **Background Processing:** Celery with exponential backoff and Dead Letter Queue (DLQ) patterns.
-- **AI Services:** 
-  - **Embeddings:** `all-MiniLM-L6-v2` (384-dimension) via `sentence-transformers` (local) or OpenAI API.
-  - **Reasoning:** OpenAI `gpt-4o-mini` for memory distillation and graph extraction.
-  - **NLP:** spaCy and NetworkX for graph-based associative memory processing.
-
-### Frontend & Integration
-- **Dashboard:** Streamlit-based visualization and admin interface.
-- **SDKs:** 
-  - `nexmem-py`: Python client for agent integration.
-  - `nexmem-js`: TypeScript/JavaScript client for web-based agents.
-- **Agent Interoperability:** Model Context Protocol (MCP) server for direct integration with Claude Desktop and other MCP-compliant hosts.
+This document is the source of truth for what is actually shipped vs
+what is planned. It is rewritten end-of-phase rather than maintained
+incrementally because the previous version was overclaiming. If a
+feature is not listed below as "shipped", assume it is not in the
+product.
 
 ---
 
-## 3. Feature Implementation Status
+## 1. What the backend is
 
-| Feature | Status | Implementation Details |
-| :--- | :--- | :--- |
-| **Episodic Memory** | ✅ Complete | Time-stamped conversation storage with session management. |
-| **Semantic Memory** | ✅ Complete | Vector-based similarity search using HNSW indexes (384-dim). |
-| **Associative Memory** | ✅ Complete | Graph-based entity/relationship extraction and traversal. |
-| **Procedural Memory** | ✅ Complete | User preferences, settings, and workflows (JSONB). |
-| **Hybrid Retrieval** | ✅ Complete | Reciprocal Rank Fusion (RRF) combining vector, FTS, and graph. |
-| **Background Consolidation** | ✅ Complete | Asynchronous distillation of episodic memories into engrams. |
-| **Multi-Tenancy** | ✅ Complete | Strict isolation via `app_id` and PostgreSQL Row Level Security (RLS). |
-| **GDPR Compliance** | ✅ Complete | Export (`/export`), Delete (`/all`), and Consent (`/consent`) endpoints. |
-| **Auth & Security** | ✅ Complete | JWT (Bearer) and API Key (`mem_...`) authentication schemes. |
-| **Testing Suite** | ✅ Complete | Zero-dependency testing with `DEMO_MODE` (In-memory stores). |
+A persistent memory layer for LLM agents, exposed as a small FastAPI
+service. Stores four "memory types" — episodic, semantic, procedural,
+and a graph (associative) — plus distilled "engrams" derived from
+the raw episodic stream.
+
+Every record is scoped by `user_id`. Records may also carry an
+optional `app_id` for the same user to keep agents distinct. App
+scoping is request-scoped (body or query parameter), not part of the
+authenticated identity. See `docs/APP_SCOPING.md` for the rule and
+`tests/test_app_scoping.py` for the contract.
 
 ---
 
-## 4. Test Coverage & Quality Assurance
+## 2. Tech stack
 
-The project employs a "Zero-Dependency" testing strategy, allowing the full suite to run without external infrastructure (Postgres/Redis) via a dedicated `DEMO_MODE`.
-
-- **`test_isolation_and_write.py`**: Verifies multi-tenancy invariants, `app_id` scoping, and basic episodic/semantic write flows.
-- **`test_auth.py`**: Covers JWT and API Key authentication, including expired token and invalid key scenarios.
-- **`test_llm_service.py`**: Unit tests for the LLM abstraction, mocking OpenAI responses and validating tenacity retry logic.
-- **`test_engram_processor.py`**: Validates the NLP distillation logic, entity extraction, and importance scoring.
-- **`test_concurrent_writes.py`**: Ensures thread-safety and race-condition handling during high-volume memory ingestion.
-- **`locustfile.py`**: Performance and load testing script for memory retrieval and write endpoints.
-- **`run_security_audit.py`**: Custom script for checking RLS policy leaks and dependency vulnerabilities.
-
----
-
-## 5. Database Schema (Alembic Migrations)
-
-The database schema is evolved through Alembic, ensuring consistency across environments.
-- **Base Schema:** Primary tables: `episodic_memory`, `semantic_memory`, `procedural_memory`, `knowledge_nodes`, `knowledge_edges`.
-- **Vector Optimization:** HNSW indexes on `semantic_memory.vector` and `engrams.dense_embedding`.
-- **Full-Text Search:** `TSVECTOR` columns with GIN indexes on episodic and semantic tables.
-- **Security:** RLS policies enforced on all memory tables using `user_id` and `app_id`.
-- **Engram Storage:** `engrams` table for distilled, compressed memory units.
-
----
-
-## 6. Identified Technical Debt & Implementation Gaps
-
-### High Priority (Production Blockers)
-1.  **Rate Limiting & Quotas:** Implementation of Redis-based rate limiting is in progress. Monthly write quotas per `app_id` need to be enforced.
-2.  **Secret Management:** Move from `.env` to a robust secret provider (e.g., Render Secrets or AWS Secrets Manager) for production keys.
-3.  **Observability:** Sentry integration for error tracking is partially implemented; structured logging (`structlog`) is in place but requires dashboarding.
-
-### Medium Priority
-1.  **Advanced Reranking:** Current hybrid search uses basic RRF; integration of a dedicated reranker (e.g., Cohere or local cross-encoder) is planned.
-2.  **SDK Parity:** Ensure `nexmem-js` supports all advanced retrieval filters available in the Python SDK.
-3.  **Graph Visualization:** The Streamlit dashboard needs a more interactive graph view for associative memory debugging.
+* **Backend:** FastAPI on Python 3.11.
+* **Database:** PostgreSQL 16+ with `pgvector`, `pg_trgm`, and Row
+  Level Security. Phase 2 extends RLS to `users`, `api_keys`,
+  `refresh_tokens`, and `token_usage` (was previously memory-only).
+* **Cache / queue:** Redis. Used for rate limiting, brute-force
+  lockout, monthly write/read quotas, and Celery broker.
+* **Background jobs:** Celery worker + beat. Used for memory
+  consolidation; previous in-process scheduler is retained as a
+  fallback path but is not the production target.
+* **AI services:**
+  * Embeddings — `all-MiniLM-L6-v2` (384-d) via
+    `sentence-transformers`, lazy-loaded on first request.
+  * Rerank — `cross-encoder/ms-marco-MiniLM-L-6-v2`, lazy-loaded.
+  * NLP — spaCy `en_core_web_sm` for entity / action / object
+    extraction.
+  * LLM — OpenAI `gpt-4o` for RAG, `gpt-4o-mini` for consolidation.
+* **Observability:** structlog JSON logging with `request_id`,
+  `user_id`, `app_id`, `route`, `status`, `latency_ms`.
+  Sentry initialized when `SENTRY_DSN` is set, with conservative
+  sample rates (`traces=0.1`, `profiles=0`) and a `before_send` hook
+  that strips Authorization, Cookie, X-Api-Key headers and
+  password / refresh_token / api_key body fields.
+* **Deployment target:** Render. `render.yaml` provisions web,
+  Celery worker, Celery beat, and Redis. Migrations run via
+  `scripts/run_with_migrations.sh` which acquires a Postgres
+  advisory lock so multi-replica deploys cannot race.
 
 ---
 
-## 7. Environment Configuration (.env.example)
-- `DATABASE_URL`: PostgreSQL connection string.
-- `REDIS_URL`: Redis connection for Celery/Rate-limiting.
-- `OPENAI_API_KEY`: Required for consolidation and RAG.
-- `SECRET_KEY`: JWT signing secret.
-- `DEMO_MODE`: Toggle for zero-dependency local development/testing.
-- `CONSOLIDATION_INTERVAL_DAYS`: Frequency of memory distillation.
+## 3. What is shipped
+
+### 3.1 Auth & sessions
+* Email/password registration and login with bcrypt-hashed
+  passwords (passlib + bcrypt 4.0.1).
+* JWT access tokens (HS256, whitelisted; alg=none cannot fall
+  through). Default 4-hour expiry; expired tokens are rejected.
+* Refresh tokens stored hashed in the `refresh_tokens` table with
+  `revoked_at` column. `/auth/refresh` rotates the token and rejects
+  replays. `/auth/logout` revokes the current session.
+  `/auth/logout-all` revokes every session.
+* API keys — `nxm_<urlsafe-base64>` form, stored as SHA-256 hashes,
+  looked up with `secrets.compare_digest`. `DELETE /auth/api-keys/{id}`
+  hard-deletes so a leaked key stops working immediately.
+* Brute-force lockout on login: 5 failures within 10 minutes locks
+  the email and IP for 15 minutes. Uses Redis when available,
+  in-memory otherwise (single-worker only — see R-107).
+* **Phase 3 (post-Phase 2):**
+  * Email verification on registration. `/auth/verify-email/confirm`
+    consumes a single-use 24-hour token and stamps
+    `users.email_verified_at`. Login refuses to mint tokens for an
+    unverified email user when `EMAIL_VERIFICATION_REQUIRED=true`
+    (operator opt-in, defaults to `false`). Resend endpoint returns
+    a generic 202 to avoid account enumeration. (P3-A1.)
+  * Password reset flow. `/auth/password-reset/request` issues a
+    single-use 30-minute token; `/auth/password-reset/confirm`
+    rotates the password and revokes every active refresh token.
+    Always returns 202 on request to avoid leaking which addresses
+    are registered. (P3-A2.)
+  * Authenticated `/auth/change-password` requires the current
+    password and revokes all refresh tokens on success. (P3-A3.)
+  * `GET /auth/sessions` lists active refresh tokens with their
+    user_agent, ip, issued/expires timestamps. `DELETE
+    /auth/sessions/{id}` revokes a single session. (P3-A4.)
+  * Per-IP rate limit on `/auth/register` (default `5/hour`)
+    enforced via slowapi. Demo mode is exempted so tests run
+    without throttling. (P3-A8.)
+
+### 3.2 Memory writes
+Five tables: `episodic_memory`, `semantic_memory`,
+`procedural_memory`, `knowledge_nodes`, `knowledge_edges`, plus
+`engrams`. Writes carry optional `app_id`. Every user-scoped table
+has RLS enabled and forced; `users_login_lookup` SELECT policy
+permits unauthenticated lookups by email for the login flow.
+
+`POST /api/v1/memory/episode/write` (the unified write endpoint)
+runs in a single transaction. NLP / embedding / engram precompute
+happens before the transaction opens, so a slow embedding call does
+not hold a DB transaction open. A mid-chain failure rolls back the
+entire write — no orphan rows. (R-105.)
+
+### 3.3 Memory reads
+* Unified context assembly at `POST /api/v1/memory/context` returns
+  ranked semantic hits, recent episodes with decay scores, the user's
+  preferences, and the engram summary, capped to a token budget.
+* `POST /api/v1/rag/chat` performs hybrid retrieval (vector +
+  full-text + graph) and feeds the result to the LLM with a
+  redacted prompt.
+
+### 3.4 Quotas
+Phase 2 introduces `app/core/quotas.py`:
+* `enforce_write_quota` is wired into every write route. Per-tier
+  caps (`free=1k`, `starter=10k`, `pro=100k`, enterprise infinite)
+  are read from settings.
+* `enforce_read_quota` is wired into `/memory/context` and
+  `/rag/chat` with much more generous caps.
+* TTL is set on the first INC of the month and not reset on
+  subsequent INCs; quotas reset on the first day of the next month
+  (UTC) by Redis key expiry.
+* Production fails closed (HTTP 503) when REDIS_URL is set but
+  unreachable.
+
+### 3.5 Async safety
+`app/core/concurrency.py` provides three named semaphore pools
+(`embedder=4`, `nlp=4`, `reranker=2`). Every CPU-heavy synchronous
+call from an async route handler goes through `run_bounded(pool,
+fn, …)` so the executor cannot spawn unbounded threads under burst
+traffic.
+
+### 3.5.1 Production guard-rails (P5/P6/P7/P9 P0 pass)
+* **DB statement timeouts** (P5-C1). Every non-demo asyncpg
+  connection sets `statement_timeout=30s` and
+  `idle_in_transaction_session_timeout=60s` via
+  `connect_args["server_settings"]`, plus an `application_name` so
+  `pg_stat_activity` is readable during incidents. A runaway query
+  no longer pins a Supabase pooler connection forever.
+* **Celery time + memory bounds** (P6-D2 / D3 / D4 / G2 prep).
+  `task_soft_time_limit=240`, `task_time_limit=300` kill hung tasks.
+  `worker_max_tasks_per_child=100` recycles workers so spaCy /
+  sentence-transformers cannot leak unbounded RSS.
+  `result_expires=3600` keeps Redis from filling.
+  `task_acks_late=True` + `worker_prefetch_multiplier=1` give safe
+  rolling deploys (a SIGTERM during a task re-queues it).
+* **Request body cap** (P7-E5). New `BodySizeLimitMiddleware` is
+  outermost in the stack and 413s any request body above
+  `settings.max_request_body_bytes` (default 5 MiB). Both the
+  Content-Length fast path and a streaming/chunked slow path are
+  enforced so an attacker cannot bypass by omitting Content-Length.
+  GET / HEAD / OPTIONS bypass for zero overhead on read traffic.
+* **GDPR routes hardened** (P7-E1, P7-E2).
+  `GET /memory/user/{user_id}/export` now streams NDJSON via a
+  server-side cursor (`yield_per=256`) so a million-episode user
+  no longer OOMs the worker; `Content-Disposition: attachment`
+  makes the response saveable to disk.
+  `DELETE /memory/user/{user_id}/all` runs inside an explicit
+  `async with db.begin():` block so any mid-chain failure rolls
+  back atomically. Both routes now have demo-mode parity.
+* **Read-only kill switch** (P9-G1). `READ_ONLY=true` flips
+  `settings.read_only`; every state-changing route returns 503
+  with `Retry-After: 60` while reads, health/metrics, and session
+  revocation routes (`/auth/logout`, `/auth/logout-all`,
+  `DELETE /auth/sessions/{id}`) continue to flow. Body cap is
+  outer than the kill switch so 413 wins over 503.
+* **JWT alg whitelist in user-context middleware**. The Phase 1
+  middleware called `jwt.decode()` directly with
+  `algorithms=[ALGORITHM]`; this PR routes through
+  `security.decode_token()` so every JWT decode in the codebase
+  shares one whitelisted code path.
+
+### 3.6 Migrations
+* Alembic chain runs through `alembic/env.py` which acquires
+  `pg_try_advisory_lock(728_419_362_001)` before applying any
+  migration. The first replica wins; the rest skip the upgrade
+  and exit normally.
+* `scripts/run_with_migrations.sh` is the production entry point
+  (set as the Render `startCommand`).
+* Migration authoring rules in `CONTRIBUTING.md`.
+
+### 3.7 Observability
+* Single structured JSON log line per request with `request_id`,
+  `user_id`, `app_id`, `method`, `path`, `status`, `latency_ms`,
+  `client_ip`, `user_agent`. Authorization/Cookie/X-Api-Key
+  headers and credential-shaped body fields are never logged.
+  Tested in `tests/test_logging_redaction.py`.
+* `X-Request-ID` echoed back in every response. Client values are
+  honoured if 8–64 chars and alnum/-/_; junk is replaced with a
+  fresh synthesized id.
+* `/health/live` is fast and unconditional. `/health/ready` checks
+  Postgres (with latency), Redis (when configured), and the
+  embedding service. Slow DB probes (>1000 ms) are flagged.
+
+### 3.8 CI
+GitHub Actions runs three jobs per PR:
+1. `secret-scan` — `python scripts/scan_secrets.py --ci`. Blocks
+   the merge on any pattern hit.
+2. `lint-and-test` — flake8 syntax check + pytest unit suite with
+   `pytest-cov`. Coverage XML uploaded as artefact.
+3. `integration-tests` — runs `pgvector/pgvector:pg16` and
+   `redis:7` service containers and executes
+   `pytest -m integration` with `RUN_DB_TESTS=1`.
+4. `security-audit` — `tests/run_security_audit.py` (bandit).
 
 ---
 
-## 8. Next Steps for External Review
-- [ ] Audit PostgreSQL RLS policy efficiency under high tenant load.
-- [ ] Review hybrid retrieval scoring logic (RRF weight tuning).
-- [ ] Validate memory distillation (engram) accuracy across varied conversation domains.
-- [ ] Performance profiling of the spaCy/NetworkX graph extraction pipeline.
+## 4. Known limitations for private beta
+
+These are real and are tracked in `BACKEND_RISKS.md`. They are
+acceptable for first private beta but every operator should know
+them.
+
+* **R-101 RLS coverage is narrow.** Phase 2 extends RLS to
+  `api_keys`, `refresh_tokens`, `token_usage`, and `users` itself.
+  Future user-scoped tables must add their own RLS policy in the
+  same migration.
+* **R-102 Refresh tokens are revocable but access tokens are not.**
+  An access token compromised mid-session remains valid until its
+  4-hour expiry. We do not yet have an access-token blocklist.
+* **R-107 NetworkX graph is per-process.** The web service is
+  pinned to `--workers 1` in `render.yaml`. Bumping the worker
+  count without making the graph store shared would give clients
+  inconsistent results.
+* **R-201 Git history rewrite still pending.** Phase 1's leaked
+  Supabase password is gone from the working tree (and CI will
+  block its return), but it remains in the older commit chain on
+  `main` and on the Phase 1 PR branch. Operator action documented
+  in `docs/INCIDENT_RUNBOOK.md`.
+* **R-203 No first-class `apps` model.** App scoping is an
+  optional column on each user-scoped table, validated against the
+  current user. Adequate for private beta. A real `apps` table is
+  future work.
+* **R-205 Migration 007 is destructive.** `DELETE FROM
+  semantic_memory` ran once on the live database during the
+  initial 384-d migration; it cannot be re-run without losing
+  data. Documented and fenced.
+
+---
+
+## 5. What is NOT shipped
+
+Listed honestly so reviewers do not assume features are present.
+
+* No billing / Stripe / subscription productization.
+* No SDK published to PyPI / npm. `nexmem-py` and `nexmem-js` exist
+  as in-repo packages but are not published.
+* No MCP-server hardening beyond a smoke-tested skeleton.
+* No new connectors, webhooks, or third-party integrations.
+* No cosmetic UI work in Phase 2.
+
+---
+
+## 6. Test counts (end of Phase 2)
+
+* **Unit tests:** 75 passing locally. CI runs the same set with
+  `pytest-cov` and uploads coverage.
+* **LLM-dependent tests:** 33 skip cleanly when no OpenAI key is
+  configured.
+* **Slow tests:** 5 deselected by default (full NLP pipeline,
+  HuggingFace model downloads). Run on demand with `pytest -m slow`.
+* **Integration tests:** 1 (`tests/test_transactional_writes_integration.py`)
+  exercises rollback against a real Postgres + Redis. Runs in
+  the integration job.
+
+Phase 1 reported "56 unit tests passing"; that figure could not be
+reproduced because the `Settings` validator was rejecting the
+default test environment. Phase 2 fixed the test baseline as
+P2-S0 / P2-S2 work; the 75 number is the post-fix count.

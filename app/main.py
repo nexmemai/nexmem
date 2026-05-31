@@ -6,21 +6,30 @@ Supports two modes:
 """
 
 from app.config import settings
-from app.routers import episodic, semantic, procedural, graph, rag, auth, health, memory, apps, gdpr
+from app.routers import episodic, semantic, procedural, graph, rag, auth, health, memory, apps, gdpr, totp, admin
 from app.core.rate_limit import limiter
+from app.middleware.body_size_limit import BodySizeLimitMiddleware
+from app.middleware.json_shape_guard import JsonShapeGuardMiddleware
+from app.middleware.read_only_mode import ReadOnlyModeMiddleware
 from slowapi.middleware import SlowAPIMiddleware
 from slowapi.errors import RateLimitExceeded
 from slowapi import _rate_limit_exceeded_handler
 from app.core.logging import configure_logging
 
+import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, Depends, HTTPException
 from app.core.deps import get_current_user
 from app.core import security
-from app.database import reset_current_user_id, set_current_user_id
+from app.database import (
+    reset_current_user_id,
+    set_current_user_id,
+    reset_current_app_id,
+    set_current_app_id,
+)
 from app.models.user import User
 from fastapi.middleware.cors import CORSMiddleware
-from jose import JWTError, jwt
+from jose import JWTError
 import time
 import logging
 import uuid
@@ -33,20 +42,114 @@ configure_logging()
 logger = logging.getLogger(__name__)
 
 
+# ── P9-G2: graceful-shutdown in-flight tracking ──────────────────────────────
+# A simple monotonic counter incremented at the start of each HTTP
+# request and decremented after the response is fully produced. The
+# lifespan teardown polls this counter so any request still on a
+# worker when SIGTERM arrives is given up to
+# ``settings.graceful_shutdown_timeout`` seconds to finish before the
+# DB engine pool is disposed and the process exits.
+#
+# asyncio is cooperative — there is no preemption between ``await``
+# boundaries in the same event loop — so plain ``+= 1`` / ``-= 1``
+# on a module-global ``int`` is safe without a lock.
+_inflight_count: int = 0
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan — runs on startup and shutdown."""
+    """Application lifespan — runs on startup and shutdown.
+
+    Phase 2 (R-106, R-107):
+    * validate_production() RAISES on insecure config so the process
+      dies at boot instead of silently running insecure.
+    * The web service is configured to run with --workers 1 in
+      render.yaml because the in-process NetworkX graph is not shared
+      across workers. If the worker count is bumped without making
+      that state shared, requests will get inconsistent graph views.
+    """
     settings.validate_production()
-    
-    # Task 4.3: Initialize Sentry if DSN is provided
+
     if settings.sentry_dsn:
+        # Conservative trace + profile sampling for beta. PII is
+        # scrubbed in before_send below.
+        def _scrub(event, hint):
+            req = event.get("request") or {}
+            headers = req.get("headers") or {}
+            for h in list(headers):
+                if h.lower() in ("authorization", "cookie", "set-cookie", "x-api-key"):
+                    headers[h] = "[redacted]"
+            data = req.get("data")
+            if isinstance(data, dict):
+                for k in list(data):
+                    if k.lower() in ("password", "refresh_token", "access_token", "api_key"):
+                        data[k] = "[redacted]"
+            return event
+
         sentry_sdk.init(
             dsn=settings.sentry_dsn,
-            traces_sample_rate=1.0,
-            profiles_sample_rate=1.0,
-            environment=settings.environment
+            traces_sample_rate=settings.sentry_traces_sample_rate,
+            profiles_sample_rate=settings.sentry_profiles_sample_rate,
+            environment=settings.environment,
+            send_default_pii=False,
+            before_send=_scrub,
         )
         logger.info("Sentry integration initialized.")
+
+    # ── P8-F1: OpenTelemetry distributed tracing ──────────────────────────────
+    # Lazy import: the OTEL packages are only loaded when the operator
+    # explicitly opts in by setting OTEL_EXPORTER_OTLP_ENDPOINT.
+    # Skipping the import path entirely when the endpoint is unset
+    # means the test suite (which never sets the endpoint) does not
+    # need the OTEL libraries installed locally.
+    if settings.otel_exporter_otlp_endpoint:
+        try:
+            from opentelemetry import trace
+            from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
+                OTLPSpanExporter,
+            )
+            from opentelemetry.sdk.resources import Resource
+            from opentelemetry.sdk.trace import TracerProvider
+            from opentelemetry.sdk.trace.export import BatchSpanProcessor
+            from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+            from opentelemetry.instrumentation.sqlalchemy import (
+                SQLAlchemyInstrumentor,
+            )
+            from opentelemetry.instrumentation.redis import RedisInstrumentor
+
+            resource = Resource.create({"service.name": settings.otel_service_name})
+            provider = TracerProvider(resource=resource)
+            provider.add_span_processor(
+                BatchSpanProcessor(
+                    OTLPSpanExporter(endpoint=settings.otel_exporter_otlp_endpoint)
+                )
+            )
+            trace.set_tracer_provider(provider)
+
+            FastAPIInstrumentor.instrument_app(app)
+            # SQLAlchemy instrumentation is process-global, not per-engine.
+            SQLAlchemyInstrumentor().instrument()
+            RedisInstrumentor().instrument()
+
+            logger.info(
+                "OpenTelemetry tracing enabled, exporter: %s",
+                settings.otel_exporter_otlp_endpoint,
+            )
+        except Exception as exc:
+            # Tracing is best-effort: a misconfigured endpoint, missing
+            # OTEL package, or unreachable collector must NOT prevent
+            # the application from starting. Log the failure and
+            # continue without tracing.
+            logger.warning(
+                "OpenTelemetry tracing setup failed (%s); continuing without tracing",
+                exc,
+            )
+    else:
+        logger.info(
+            "OpenTelemetry tracing disabled "
+            "(OTEL_EXPORTER_OTLP_ENDPOINT not set)"
+        )
+
     if settings.demo_mode:
         print("=" * 60)
         print("AI Memory Layer - DEMO MODE")
@@ -66,7 +169,6 @@ async def lifespan(app: FastAPI):
         print(f"  - Graph edges: {stats['graph_edge_count']}")
         print("=" * 60)
     else:
-        import asyncio
         print("Starting with PostgreSQL connection...")
         from app.database import engine
 
@@ -76,7 +178,6 @@ async def lifespan(app: FastAPI):
 
         # Wrap startup tasks in a background task so the server binds the port
         # immediately. The graph rebuild is kicked off asynchronously after startup.
-        import asyncio
 
         async def _background_rebuild():
             """Rebuild NetworkX graph without blocking port binding."""
@@ -113,11 +214,49 @@ async def lifespan(app: FastAPI):
 
     yield
 
+    # ── P9-G2: graceful shutdown ──────────────────────────────────────────────
+    # Sequence:
+    #   1. Uvicorn has already stopped accepting new connections (it
+    #      closes the listen socket on SIGTERM before invoking this
+    #      lifespan teardown). We do not need to do that ourselves.
+    #   2. Wait up to ``settings.graceful_shutdown_timeout`` seconds
+    #      for the per-request middleware counter to drain to zero.
+    #   3. Stop the consolidation scheduler (no-op for Celery beat).
+    #   4. Dispose the SQLAlchemy engine so every pooled connection
+    #      is closed cleanly back to Postgres / PgBouncer.
+    #   5. Log ``graceful shutdown complete`` so the orchestrator
+    #      log scrape can confirm the drain finished before the
+    #      ``terminationGracePeriodSeconds`` ran out.
+    timeout = max(0, int(settings.graceful_shutdown_timeout))
+    if _inflight_count > 0:
+        logger.info(
+            "graceful shutdown: waiting up to %ss for %d in-flight requests",
+            timeout,
+            _inflight_count,
+        )
+        deadline = asyncio.get_event_loop().time() + timeout
+        while _inflight_count > 0 and asyncio.get_event_loop().time() < deadline:
+            await asyncio.sleep(0.05)
+        if _inflight_count > 0:
+            logger.warning(
+                "graceful shutdown: %d in-flight requests did not finish in %ss",
+                _inflight_count,
+                timeout,
+            )
+
     if not settings.demo_mode:
         from app.services.scheduler import stop_scheduler
         stop_scheduler()
         from app.database import engine
-        await engine.dispose()
+        try:
+            await engine.dispose()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("graceful shutdown: engine.dispose() failed: %s", exc)
+
+    logger.info(
+        "graceful shutdown complete (in-flight requests at exit: %d)",
+        _inflight_count,
+    )
 
 
 app = FastAPI(
@@ -131,6 +270,37 @@ app = FastAPI(
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(SlowAPIMiddleware)
+
+# P9-G1: read-only kill switch. Added BEFORE the body cap so the
+# body cap ends up OUTERMOST: a 1 GB DoS payload should still 413,
+# even when read-only mode would have 503'd it. Order matters here:
+# Starlette inserts at position 0, so the most-recently-added
+# middleware is the outermost wrapper.
+app.add_middleware(
+    ReadOnlyModeMiddleware,
+    is_read_only=lambda: bool(settings.read_only),
+)
+
+# P7-E6: bound JSON request shape (depth + total node count). Runs
+# AFTER the read-only switch and BEFORE the body cap is added below
+# so a malformed JSON body during a frozen-write window 503s rather
+# than 400s. Skips GET/HEAD/OPTIONS and non-JSON content types.
+app.add_middleware(
+    JsonShapeGuardMiddleware,
+    max_depth=lambda: settings.max_request_json_depth,
+    max_nodes=lambda: settings.max_request_json_nodes,
+)
+
+# P7-E5: cap request bodies. Added LAST (so OUTERMOST) — it must run
+# before any inner middleware tries to read the body, before the
+# kill switch (so 413 wins over 503), and before slowapi counts the
+# request against the rate limit. ``max_bytes`` is a callable so
+# the cap can be changed at runtime (env var + reload) without
+# redeploying middleware code.
+app.add_middleware(
+    BodySizeLimitMiddleware,
+    max_bytes=lambda: settings.max_request_body_bytes,
+)
 
 # Task 4.2: Prometheus metrics — instrument only (no auto-expose).
 # Metrics are served via /metrics with token auth — see endpoint below.
@@ -166,6 +336,16 @@ async def rebuild_networkx_graph() -> None:
                 text("SELECT set_config('app.current_user_id', :uid, true)"),
                 {"uid": str(user_id)},
             )
+            # Phase 4 / Amendment 1 — set NULL app context for the
+            # startup graph rebuild. Edges are user-scoped today; the
+            # NULL app id makes migration-019 policy see all rows
+            # regardless of app_id (NULL-app_id rows are universally
+            # visible; non-NULL rows still match because we are only
+            # filtering by user_id below).
+            await session.execute(
+                text("SELECT set_config('app.current_app_id', :aid, true)"),
+                {"aid": ""},
+            )
             result = await session.execute(
                 select(KnowledgeEdge, SourceNode, TargetNode)
                 .join(SourceNode, KnowledgeEdge.from_node_id == SourceNode.id)
@@ -191,34 +371,78 @@ from app.middleware.logging import logging_middleware
 
 @app.middleware("http")
 async def user_context_middleware(request: Request, call_next):
-    """Set request-local user id so DB sessions can apply PostgreSQL RLS."""
+    """Set request-local user id so DB sessions can apply PostgreSQL RLS.
+
+    Phase 3 hardening: routes through ``security.decode_token`` which
+    whitelists ``HS256`` and rejects ``alg=none`` and other surprises.
+    The previous implementation called ``jwt.decode`` directly with
+    ``algorithms=[ALGORITHM]``, which was correct but inconsistent
+    with the rest of the auth path; centralising on one helper means
+    a future algorithm rotation only needs to touch one file.
+
+    P3-A5: the decoded payload is stashed on ``request.state`` so
+    routes can read the ``jti`` to revoke "this exact token" when
+    rotating credentials. The middleware does NOT raise on a
+    blocklisted/invalid token here — that decision belongs to
+    ``get_current_user`` which has the full HTTP-401 contract. The
+    middleware only sets the RLS context when the token decoded
+    cleanly (no JWTError), so a blocklisted token never grants RLS
+    visibility.
+    """
     user_id = None
     auth_header = request.headers.get("Authorization")
     if auth_header:
         try:
             scheme, credentials = auth_header.split()
             if scheme.lower() == "bearer":
-                payload = jwt.decode(
-                    credentials,
-                    settings.secret_key,
-                    algorithms=[security.ALGORITHM],
-                )
-                user_id = payload.get("sub")
+                payload = security.decode_token(credentials)
+                # Only access tokens populate request-scoped RLS.
+                # Refresh tokens go through /auth/refresh and never
+                # reach this code path with a valid scheme.
+                if payload.get("type", "access") == "access":
+                    user_id = payload.get("sub")
+                    request.state.access_token_payload = payload
         except (ValueError, JWTError):
             user_id = None
 
     request.state.current_user_id = user_id
-    token = set_current_user_id(user_id)
+    # Phase 4 / Amendment 1 — JWT auth does NOT carry an app binding
+    # today, so the contextvar stays None here. The API-key auth path
+    # in app/core/deps.py overwrites this on request.state when it
+    # resolves an api_keys row with a non-NULL app_id. Setting None
+    # here is the safe default: migration-019 policy treats NULL
+    # current_app_id as "show NULL-app_id rows", which is the legacy
+    # behaviour for users who never adopted multi-app scoping.
+    request.state.current_app_id = None
+    user_token = set_current_user_id(user_id)
+    app_token = set_current_app_id(None)
     try:
         return await call_next(request)
     finally:
-        reset_current_user_id(token)
+        reset_current_app_id(app_token)
+        reset_current_user_id(user_token)
 
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
     """Log all HTTP requests with JSON formatting."""
     return await logging_middleware(request, call_next)
+
+
+@app.middleware("http")
+async def track_inflight_requests(request: Request, call_next):
+    """P9-G2: track in-flight requests so the lifespan teardown can wait.
+
+    Increments ``_inflight_count`` on entry, decrements after the
+    handler returns (or raises). asyncio is cooperative so the
+    naked ``+= 1`` / ``-= 1`` on the module-global is safe.
+    """
+    global _inflight_count
+    _inflight_count += 1
+    try:
+        return await call_next(request)
+    finally:
+        _inflight_count -= 1
 
 # Include routers
 app.include_router(episodic.router, prefix="/api/v1")
@@ -231,6 +455,12 @@ app.include_router(health.router)
 app.include_router(memory.router, prefix="/api/v1")
 app.include_router(apps.router, prefix="/api/v1")
 app.include_router(gdpr.router, prefix="/api/v1")
+app.include_router(totp.router, prefix="/api/v1")
+# P11-I2/I3/I4 (Block 6) — admin router. The router itself owns the
+# full ``/api/v1/admin`` prefix because every route inside is gated
+# behind the ``X-Admin-Key`` Depends; mounting it without an extra
+# prefix keeps the gate single-source-of-truth.
+app.include_router(admin.router)
 
 
 @app.api_route("/", methods=["GET", "HEAD"])

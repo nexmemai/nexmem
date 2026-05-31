@@ -1,81 +1,94 @@
-# Nexmem Production Readiness Implementation Plan
+# Nexmem Production Readiness Plan
 
-This document outlines the final steps and engineering tasks required to take the Nexmem (formerly NexMem) AI Memory Layer from its current development/MVP state to a highly available, secure, and scalable production deployment.
+**Last reviewed:** 2026-05-22 (end of Phase 2 hardening).
+
+This document is the operator-facing readiness checklist. It is
+rewritten end-of-phase from the previous, overclaiming version. Each
+item carries a verified status: *shipped*, *partial*, *not started*,
+or *deferred*. Anything marked *partial* or worse is a real gap.
+
+The previous "every box checked" version is replaced because it was
+out of step with the working tree (Phase 1 had marked everything
+complete while quota enforcement, structured logging redaction, and
+secret hygiene were not actually wired). `BACKEND_HARDENING_PHASE2.md`
+explains the reconciliation.
 
 ---
 
-## Phase 1: Security, Authentication, and Multi-Tenancy
+## Phase 1 — Auth, security, multi-tenancy
 
-Currently, the system has basic `app_id` scoping. For production, we must strictly enforce authentication and authorization.
+| Task | Status | Notes |
+|------|--------|-------|
+| Hashed API keys with constant-time lookup | shipped | `app/core/security.py::verify_api_key` uses `secrets.compare_digest`. |
+| `Depends(get_current_user)` on protected routes | shipped | Audited in P2-S2. JWT `alg` whitelisted; expired tokens rejected; tests pin both. |
+| Rate limiting + monthly quotas | shipped | `app/core/quotas.py` wired into all writes and the two read-heavy routes. Fails closed on Redis error. (Phase 1 had defined the function but never called it; Phase 2 wired it.) |
+| Secrets management | partial | Render env vars used for production. Operator-side history rewrite still pending (R-201). CI scanner blocks new leaks. Move to a managed secrets provider is deferred. |
+| Pydantic strict production validation | shipped | `validate_production` raises in non-demo mode if SECRET_KEY is weak/missing, DATABASE_URL is missing, or ALLOWED_ORIGINS is `*`. (Phase 1 only logged warnings.) |
 
-- [x] **Task 1.1: API Key Management**
-  - Implement a secure API key generation and validation system using hashed keys stored in the database.
-  - Create a FastAPI middleware/dependency (`Depends(verify_api_key)`) to protect all `/memory/*` endpoints.
-- [x] **Task 1.2: Rate Limiting and Quotas**
-  - Integrate Redis-based rate limiting (e.g., `slowapi`) to restrict API calls based on subscription tiers (e.g., 1,000 free writes/month).
-- [x] **Task 1.3: Secrets Management**
-  - Transition from local `.env` files to a secure secrets manager (AWS Secrets Manager, Doppler, or HashiCorp Vault) for production deployments.
-  - Ensure `Pydantic BaseSettings` enforces strict validation of all required production variables.
+## Phase 2 — Database scalability
 
-## Phase 2: Database Scalability and Performance
+| Task | Status | Notes |
+|------|--------|-------|
+| Connection pooling | shipped | Supabase pgbouncer transaction-mode pooler at port 6543; statement cache disabled. |
+| HNSW indexes on vector columns | shipped | `002_hnsw_index.py`, `009_engram_hnsw_index.py`. |
+| Idempotent migrations | partial | Phase 2 alembic env.py acquires an advisory lock so multi-replica deploys do not race. Migration 007 is destructive and is documented as a one-shot (R-205). Migration authoring rules added to `CONTRIBUTING.md`. |
 
-As an AI memory layer, the database will experience high write throughput and require sub-millisecond retrieval times.
+## Phase 3 — Background processing
 
-- [x] **Task 2.1: PgBouncer / Connection Pooling**
-  - Implement connection pooling (PgBouncer) to prevent FastAPI workers from exhausting PostgreSQL connections during high concurrency.
-- [x] **Task 2.2: pgvector Indexing Optimization**
-  - Add HNSW (Hierarchical Navigable Small World) indexes to the embedding columns in the `semantic` and `engrams` tables to ensure vector similarity search (`<=>`) remains fast as the dataset grows.
-- [x] **Task 2.3: Database Migrations**
-  - Audit all Alembic scripts (`alembic/versions/*`) to ensure they run idempotently in production.
-  - Verify that the `CREATE EXTENSION IF NOT EXISTS vector;` step executes securely on the production RDS/Cloud SQL instance.
+| Task | Status | Notes |
+|------|--------|-------|
+| Celery worker + beat | shipped | `render.yaml` defines both as separate services. |
+| LLM resiliency (tenacity backoff) | shipped | `app/services/llm.py` and consolidation use exponential backoff with `retry_if_exception_type` for OpenAI transient failures. |
+| Dead-letter queue for consolidation | partial | Celery's default acks_late + max_retries provides best-effort. A real DLQ topic is deferred. Failed consolidations are logged but not surfaced to operators yet. |
 
-## Phase 3: Background Processing and Reliability
+## Phase 4 — Observability
 
-The background consolidation engine (extracting engrams and graphs via spaCy/NetworkX) must not block the main thread or be lost during server restarts.
+| Task | Status | Notes |
+|------|--------|-------|
+| Structured JSON logging | shipped | `structlog` configured at startup. HTTP middleware emits one log line per request with `request_id`, `user_id`, `app_id`, `route`, `method`, `status`, `latency_ms`, `client_ip`, `user_agent`. PII redaction is tested. |
+| Prometheus metrics | shipped | `prometheus-fastapi-instrumentator` instruments every endpoint. `/metrics` is gated by `METRICS_SECRET_KEY` and returns 503 when unset. |
+| Sentry integration | shipped | Initialized when `SENTRY_DSN` is set, with `traces_sample_rate=0.1`, `profiles_sample_rate=0`, and a `before_send` hook that strips credentialed headers + body fields. |
+| LLM cost / token tracking | shipped | `track_token_usage` writes to `token_usage` (RLS-scoped) on every successful RAG call. |
 
-- [x] **Task 3.1: Message Queue Integration**
-  - Migrate the background `trigger_consolidation` tasks from FastAPI `BackgroundTasks` to a robust message queue like Celery (with Redis/RabbitMQ) or AWS SQS.
-- [x] **Task 3.2: LLM Resiliency**
-  - Add exponential backoff and retry mechanisms (using the `tenacity` library) for any external LLM calls (e.g., OpenAI/Claude) to handle rate limits or transient API outages.
-- [x] **Task 3.3: Dead Letter Queues (DLQ)**
-  - Implement DLQs for failed consolidation tasks to ensure no user memories are permanently lost if processing fails.
+## Phase 5 — CI/CD
 
-## Phase 4: Observability and Monitoring
+| Task | Status | Notes |
+|------|--------|-------|
+| Multi-stage Docker build | shipped | `Dockerfile` is slim. |
+| GitHub Actions pipeline | shipped | `secret-scan`, `lint-and-test` (with coverage), `integration-tests` (real Postgres + Redis service containers), `security-audit`, and `docker-build` jobs. |
+| Render deployment via `render.yaml` | shipped | Migrations run via `scripts/run_with_migrations.sh` (advisory-locked). DATABASE_URL is now `sync: false` so the operator sets it in the dashboard rather than committing it. |
+| Vercel frontend | shipped | Out of scope for backend hardening. |
 
-You cannot fix what you cannot see. Production requires strict tracking of latency, errors, and LLM token usage.
+## Phase 6 — Testing
 
-- [x] **Task 4.1: Structured Logging**
-  - Replace `print()` and standard python logging with structured JSON logging (e.g., `structlog`) to enable easy querying in Datadog or ELK.
-- [x] **Task 4.2: Application Performance Monitoring (APM)**
-  - Integrate Prometheus metrics (via `prometheus-fastapi-instrumentator`) to track endpoint latency (especially `get_memory_context`).
-- [x] **Task 4.3: Error Tracking**
-  - Integrate Sentry for real-time unhandled exception tracking and alert routing.
-- [x] **Task 4.4: Cost/Token Tracking**
-  - Implement a mechanism to log token usage per `app_id` to track LLM costs and bill users accurately.
+| Task | Status | Notes |
+|------|--------|-------|
+| Unit + integration tests | shipped | 75 unit tests pass in CI. 1 integration test exercises rollback against real Postgres + Redis service containers. New tests added in P2 cover secret scanning, config validation, token lifecycle, app scoping, transactional writes, concurrency primitives, logging redaction, quota enforcement, and unit-isolation sentinel. |
+| Load testing (Locust) | partial | `tests/locustfile.py` exists. Has not been run against production. R-204 is the live-load gap. |
+| SAST (bandit) | shipped | `tests/run_security_audit.py` runs in the `security-audit` CI job. |
 
-## Phase 5: CI/CD and Deployment Automation
+---
 
-Ensure code can be deployed reliably and rollbacks are instantaneous.
+## Operator action still required before first user traffic
 
-- [x] **Task 5.1: Containerization**
-  - Finalize `Dockerfile` (multi-stage build to reduce image size) and `docker-compose.prod.yml`.
-- [x] **Task 5.2: CI/CD Pipeline (GitHub Actions)**
-  - Create a pipeline that runs on every PR:
-    - Code linting (`flake8`, `black`, `mypy`).
-    - Automated tests.
-    - Docker image build and push to a container registry (ECR, Docker Hub).
-- [x] **Task 5.3: Backend Deployment (Render / AWS / GCP)**
-  - Set up continuous deployment to a cloud provider. For Render, configure the `render.yaml` blueprint.
-- [x] **Task 5.4: Frontend Deployment (Vercel)**
-  - Connect the `nexmem-landing` Next.js repository to Vercel.
-  - Map the custom domain (`nexmem.ai`).
+These cannot be performed by the agent; they require a human with
+access to GitHub, Render, and Supabase:
 
-## Phase 6: Testing and Quality Assurance
+1. **Rewrite git history** to purge the rotated Supabase password
+   from older commits. Steps in `docs/INCIDENT_RUNBOOK.md`.
+2. **Set DATABASE_URL** in the Render dashboard for both
+   `nexmem-api` and `nexmem-celery-worker`. The values previously
+   embedded in `render.yaml` were removed in P2-S1.
+3. **Confirm REDIS_URL** is wired into the web service. The
+   `nexmem-redis` service is provisioned in `render.yaml`.
+4. **Apply migration 013_extend_rls** to the live database via the
+   advisory-locked entrypoint. After this runs, the
+   `users_login_lookup` policy must permit logins; verify with a
+   test login.
+5. **Generate a fresh `SECRET_KEY`** in the Render dashboard
+   (`python -c "import secrets; print(secrets.token_hex(32))"`).
+   This invalidates every issued JWT and forces re-login.
 
-- [x] **Task 6.1: Unit & Integration Tests**
-  - Write Pytest suites covering the entire core logic: unified write logic, cross-encoder reranking, and `app_id` context isolation.
-  - Mock the database (using testcontainers or SQLite/pglite) and LLM responses.
-- [x] **Task 6.2: Load Testing**
-  - Use `Locust` or `k6` to simulate high-traffic agent interactions and ensure the FastAPI backend scales horizontally.
-- [x] **Task 6.3: Security Audit**
-  - Run SAST tools (e.g., `bandit`) to scan the codebase for vulnerabilities.
+Once all five steps are done, the backend is ready for first real
+user traffic. The Go/no-go recommendation is in
+`BACKEND_HARDENING_PHASE2.md`.

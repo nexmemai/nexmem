@@ -19,7 +19,7 @@ pip install -e .
 ```python
 from nexmem import MemoryClient
 
-client = MemoryClient(api_key="mem_your_key_here")
+client = MemoryClient(api_key="nxm_your_key_here")
 
 await client.remember("User prefers Python over JavaScript for backend.")
 
@@ -34,7 +34,7 @@ Using an async context manager:
 ```python
 from nexmem import MemoryClient
 
-async with MemoryClient(api_key="mem_your_key_here") as client:
+async with MemoryClient(api_key="nxm_your_key_here") as client:
     await client.remember("User prefers short, direct technical answers.")
     context = await client.recall("how should I answer this user?")
     print(context.content)
@@ -45,7 +45,7 @@ async with MemoryClient(api_key="mem_your_key_here") as client:
 ```python
 from nexmem import SyncMemoryClient
 
-with SyncMemoryClient(api_key="mem_your_key_here") as client:
+with SyncMemoryClient(api_key="nxm_your_key_here") as client:
     client.remember("User prefers Python for backend work.")
     context = client.recall("what backend language does the user prefer?")
     print(context.memories.content)
@@ -65,7 +65,42 @@ await client.forget_all(confirm=True)
 
 `forget_all(confirm=True)` permanently deletes the authenticated user's memories and invalidates authentication.
 
+## Local development
+
+The SDK defaults to the hosted production backend. To point it at a
+backend you are running locally on `http://localhost:8000`, pass
+`base_url` to the constructor:
+
+```python
+from nexmem import MemoryClient
+
+async with MemoryClient(
+    api_key="nxm_replace_with_your_local_key",
+    base_url="http://localhost:8000",
+) as client:
+    await client.remember("User prefers concise answers.")
+    context = await client.recall("how should I answer this user?")
+    print(context.content)
+```
+
+For a complete copy-pasteable end-to-end run that registers a fresh
+demo user, mints an `nxm_` API key, and drives `remember` + `recall`
+against a local backend, see
+[`examples/python_quickstart.py`](../examples/python_quickstart.py)
+and the [`examples/README.md`](../examples/README.md) prereqs.
+
 ## Publishing
+
+`nexmem-py` is not on PyPI yet. Until it ships, install it from this
+repository for local use:
+
+```bash
+pip install -e nexmem-py
+```
+
+Once the package is published, the install line will become
+`pip install nexmem-py`. The publish step itself is tracked as
+operator action #11 in `KIRO_WORK_LOG.md`:
 
 ```bash
 python -m build

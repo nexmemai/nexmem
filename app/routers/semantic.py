@@ -13,6 +13,7 @@ from sqlalchemy import select, desc, func, text
 from app.database import get_db
 from app.config import settings
 from app.core.deps import get_current_user
+from app.core.quotas import enforce_write_quota
 from app.models.user import User
 from app.services.embedder import embedder
 
@@ -34,7 +35,7 @@ class SemanticSearchRequest(BaseModel):
     query: str
 
 
-@router.post("/{user_id}/semantics", response_model=dict)
+@router.post("/{user_id}/semantics", response_model=dict, dependencies=[Depends(enforce_write_quota)])
 async def create_semantic(
     user_id: str,
     body: SemanticCreateRequest,
@@ -79,7 +80,9 @@ async def create_semantic(
     try:
         vector = await asyncio.to_thread(embedder.embed, body.content)
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Embedding service error: {str(e)}")
+        # P7-E9: log internal cause; respond with a generic 502.
+        logger.warning("semantic write embed failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=502, detail="Embedding service unavailable")
     
     record = SemanticMemory(
         user_id=str(current_user.id),
@@ -141,7 +144,9 @@ async def semantic_search(
     try:
         query_vector = await asyncio.to_thread(embedder.embed, body.query)
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Embedding service error: {str(e)}")
+        # P7-E9: log internal cause; respond with a generic 502.
+        logger.warning("semantic search embed failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=502, detail="Embedding service unavailable")
     
     # Build SQL with optional app_id filter
     sql_text = """

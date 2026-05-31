@@ -50,19 +50,49 @@ def reset_demo_stores():
     """
     Clear all in-memory demo stores before each test so that tests are fully
     isolated from one another.
+
+    Three classes of state:
+
+    1. The five top-level memory stores in ``app.demo_db``.
+    2. The demo auth store (users, api keys, refresh tokens, etc).
+    3. The audit-log demo store (Phase 10).
+    4. The brute-force in-memory store (a module global keyed on
+       ``email:`` / ``ip:`` — without reset, accumulated login
+       failures from earlier tests lock out ``ip:testclient``).
+    5. The slowapi limiter's in-memory store — the rate-limit state
+       persists between tests when ``storage_uri="memory://"``.
     """
+    from app.core import audit_log as _audit_log_module
+    from app.core import brute_force as _brute_force_module
+    from app.core.rate_limit import limiter as _slowapi_limiter
+
     demo_db.episodic_store.clear()
     demo_db.semantic_store.clear()
     demo_db.procedural_store.clear()
     demo_db.graph_nodes_store.clear()
     demo_db.graph_edges_store.clear()
+    demo_db.reset_demo_auth()
+    _audit_log_module.reset_demo_audit_log()
+    _brute_force_module._store.clear()
+    _brute_force_module._reset_account_escalation()
+    try:
+        _slowapi_limiter.reset()
+    except Exception:
+        pass
     yield
-    # Optionally clear again on teardown
     demo_db.episodic_store.clear()
     demo_db.semantic_store.clear()
     demo_db.procedural_store.clear()
     demo_db.graph_nodes_store.clear()
     demo_db.graph_edges_store.clear()
+    demo_db.reset_demo_auth()
+    _audit_log_module.reset_demo_audit_log()
+    _brute_force_module._store.clear()
+    _brute_force_module._reset_account_escalation()
+    try:
+        _slowapi_limiter.reset()
+    except Exception:
+        pass
 
 
 # ── Auth helper ───────────────────────────────────────────────────────────────
@@ -74,7 +104,7 @@ async def auth_headers(client: AsyncClient) -> dict:
     """
     import uuid
     unique = uuid.uuid4().hex[:8]
-    creds = {"email": f"test_{unique}@nexmem.test", "password": "TestPass123!"}
+    creds = {"email": f"test_{unique}@nexmem.example.com", "password": "TestPass123!"}
 
     reg = await client.post("/api/v1/auth/register", json=creds)
     assert reg.status_code in (200, 201), f"Registration failed: {reg.text}"

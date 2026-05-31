@@ -7,6 +7,7 @@ from typing import List, Optional
 import openai
 
 from app.config import settings
+from app.core.circuit_breaker import CircuitOpenError, get_breaker
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,11 @@ def track_token_usage(
 
     async def _insert():
         async with async_session() as session:
+            # Apply RLS context so the INSERT passes the policy added in
+            # 013_extend_rls (token_usage_user_isolation).
+            from app.database import set_rls_context
+
+            await set_rls_context(session, str(user_id))
             usage = TokenUsage(
                 id=uuid.uuid4(),
                 user_id=uuid.UUID(user_id),
@@ -115,8 +121,16 @@ class LLMService:
                 max_tokens=1024,
             )
 
+        # P6-D7: short-circuit when OpenAI has been failing across the
+        # fleet. Without this the tenacity retries above would soak
+        # every request for ~30s during an outage and saturate the
+        # worker thread pool.
+        breaker = get_breaker("openai")
+
         try:
+            breaker.guard()
             response = _call_llm()
+            breaker.record_success()
             latency_ms = (time.time() - start_time) * 1000
 
             prompt_tokens = response.usage.prompt_tokens
@@ -138,10 +152,21 @@ class LLMService:
                 "latency_ms": round(latency_ms, 2),
             }
 
+        except CircuitOpenError:
+            # The router catches this and translates to 503 with
+            # Retry-After. We do NOT record_failure here — the
+            # breaker is already open.
+            logger.warning(
+                "openai circuit open; refusing rag call for user_id=%s",
+                user_id,
+            )
+            raise
         except openai.APIError as e:
+            breaker.record_failure()
             logger.error(f"OpenAI API error: {e}")
             raise
         except Exception as e:
+            breaker.record_failure()
             logger.error(f"Unexpected error during LLM generation: {e}")
             raise
 

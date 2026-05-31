@@ -1,33 +1,43 @@
-from typing import Optional
-from fastapi import Depends, HTTPException, status, Request
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
-from jose import jwt, JWTError
+"""Auth dependency.
+
+Phase 2 changes:
+* Uses ``app.core.security.decode_token`` so JWT algorithm is whitelisted.
+  ``alg=none`` is no longer accepted via fallthrough.
+* Does NOT mutate the global RLS contextvar. The HTTP middleware in
+  ``app/main.py`` owns the contextvar lifecycle. We only set
+  ``request.state.current_user_id`` and apply RLS to the active session
+  via ``set_rls_context`` so Postgres policies see the right identity
+  for this request only.
+* Demo mode supports multi-user auth via ``app.core.demo_auth`` so the
+  test suite can exercise register/login/me with distinct user ids.
+  The legacy ``DEMO_USER_ID`` short-circuit is kept as a fallback when
+  no Authorization header is presented and the request reaches a route
+  that does not require auth-by-default.
+"""
+from __future__ import annotations
+
+import hashlib
 import uuid
 from datetime import datetime
+from typing import Optional
 
-from app.database import get_db
-from app.database import set_current_user_id, set_rls_context
-from app.models.user import User, APIKey
-from app.core import security
+from fastapi import Depends, HTTPException, Request, status
+from jose import JWTError
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.config import settings
-from app.demo_db import DEMO_USER_ID
+from app.core import demo_auth
+from app.core.security import decode_token
+from app.database import get_db, set_rls_context
+from app.models.user import APIKey, User
 
 
 async def get_current_user(
     request: Request,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ) -> User:
-    """
-    Get the current authenticated user supporting both JWT (Bearer) and API keys (ApiKey).
-    """
-    if settings.demo_mode:
-        return User(
-            id=uuid.UUID(DEMO_USER_ID),
-            is_active=True,
-            created_at=datetime.utcnow(),
-        )
-
+    """Resolve the authenticated user from a Bearer JWT or ApiKey header."""
     auth_header = request.headers.get("Authorization")
     if not auth_header:
         raise HTTPException(
@@ -45,49 +55,129 @@ async def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    user: Optional[User] = None
+    app_id_from_key: Optional[str] = None  # P4-B4 / Amendment 1: from api_keys.app_id
+
     if scheme.lower() == "apikey":
-        # Handle API Key
-        import hashlib
         key_hash = hashlib.sha256(credentials.encode()).hexdigest()
-        result = await db.execute(select(APIKey).where(APIKey.key_hash == key_hash))
-        api_key_obj = result.scalar_one_or_none()
-        
-        if not api_key_obj or not api_key_obj.is_active:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key")
-            
-        api_key_obj.last_used_at = datetime.utcnow()
-        await db.commit()
-        
-        result = await db.execute(select(User).where(User.id == api_key_obj.user_id))
-        user = result.scalar_one_or_none()
-        
-    elif scheme.lower() == "bearer":
-        # Handle JWT
-        try:
-            payload = jwt.decode(
-                credentials, settings.secret_key, algorithms=[security.ALGORITHM]
+        if settings.demo_mode:
+            api_key = demo_auth.get_api_key_by_hash(key_hash)
+            if api_key is None:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key"
+                )
+            demo_user = demo_auth.get_user_by_id(str(api_key.user_id))
+            if demo_user is None:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key"
+                )
+            user = User(
+                id=demo_user.id,
+                email=demo_user.email,
+                wallet_address=demo_user.wallet_address,
+                hashed_password=demo_user.hashed_password,
+                is_active=demo_user.is_active,
+                created_at=demo_user.created_at,
+                email_verified_at=demo_user.email_verified_at,
             )
-            user_id: str = payload.get("sub")
-            token_type: str = payload.get("type", "access")
-            
-            if user_id is None:
-                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
-            if token_type != "access":
-                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token type")
-                
-            try:
-                user_uuid = uuid.UUID(user_id)
-            except ValueError:
-                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid user ID in token")
-                
-            result = await db.execute(select(User).where(User.id == user_uuid))
+            # Demo store does not persist app_id today; leave None so
+            # the RLS policy sees the legacy "no app context" behaviour.
+            app_id_from_key = getattr(api_key, "app_id", None)
+        else:
+            result = await db.execute(select(APIKey).where(APIKey.key_hash == key_hash))
+            api_key_obj = result.scalar_one_or_none()
+            if not api_key_obj or not api_key_obj.is_active:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key"
+                )
+            api_key_obj.last_used_at = datetime.utcnow()
+            # Phase 4 / Amendment 1: capture the app binding (may be NULL
+            # for keys not yet rotated to first-class apps). Propagated
+            # below to request.state.current_app_id and to set_rls_context.
+            app_id_from_key = (
+                str(api_key_obj.app_id) if api_key_obj.app_id is not None else None
+            )
+            result = await db.execute(select(User).where(User.id == api_key_obj.user_id))
             user = result.scalar_one_or_none()
+
+    elif scheme.lower() == "bearer":
+        try:
+            payload = decode_token(credentials)
         except JWTError:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Could not validate credentials",
                 headers={"WWW-Authenticate": "Bearer"},
             )
+
+        user_id: str | None = payload.get("sub")
+        token_type: str = payload.get("type", "access")
+        if user_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
+            )
+        # P11-I2 (Block 6): admin impersonation tokens carry
+        # ``type=impersonation`` and resolve to the target user
+        # exactly like an access token would. The audit row below
+        # captures the impersonation context per request.
+        if token_type not in ("access", "impersonation"):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token type"
+            )
+
+        try:
+            user_uuid = uuid.UUID(user_id)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid user ID in token",
+            )
+
+        if settings.demo_mode:
+            # P11-I3 (Block 6): demo-mode equivalent of the Redis user-
+            # blocklist check that ``decode_token`` does for production.
+            # We keep it here (not in security.py) so security.py has
+            # zero demo coupling; both paths converge on the same
+            # 401 + iat-based cutoff semantic. Only ``type=access`` is
+            # subject to the cutoff — admin impersonation tokens
+            # (P11-I2) intentionally survive a force-logout so the
+            # admin can still investigate the account.
+            from app import demo_db
+
+            if token_type == "access":
+                iat = payload.get("iat")
+                cutoff = demo_db.demo_force_logout.get(str(user_uuid))
+                if (
+                    cutoff is not None
+                    and iat is not None
+                    and int(iat) < int(cutoff)
+                ):
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail="Token revoked by admin force-logout",
+                    )
+
+            demo_user = demo_auth.get_user_by_id(str(user_uuid))
+            if demo_user is None:
+                # Token was issued for a user that no longer exists in the
+                # demo store (e.g. between test runs that reset state).
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="User not found or inactive",
+                )
+            user = User(
+                id=demo_user.id,
+                email=demo_user.email,
+                wallet_address=demo_user.wallet_address,
+                hashed_password=demo_user.hashed_password,
+                is_active=demo_user.is_active,
+                created_at=demo_user.created_at,
+                email_verified_at=demo_user.email_verified_at,
+            )
+        else:
+            result = await db.execute(select(User).where(User.id == user_uuid))
+            user = result.scalar_one_or_none()
+
     else:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -96,9 +186,42 @@ async def get_current_user(
         )
 
     if user is None or not user.is_active:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found or inactive")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found or inactive",
+        )
 
     request.state.current_user_id = str(user.id)
-    set_current_user_id(str(user.id))
-    await set_rls_context(db, str(user.id))
+    # Phase 4 / Amendment 1: stash app_id on request state so get_db
+    # can pass it to set_rls_context. Only the API-key auth path
+    # populates this today; the JWT path leaves it None which yields
+    # the documented "rows with NULL app_id are visible regardless of
+    # current_app_id" behaviour from migration 019.
+    request.state.current_app_id = app_id_from_key
+    if not settings.demo_mode:
+        await set_rls_context(db, str(user.id), app_id_from_key)
+    # P11-I2 (Block 6): record one audit row per request made under
+    # an admin impersonation token. Noisy by design — the request-level
+    # trail is the whole point of the feature ("which API call did the
+    # admin make while impersonating user X?"). The helper is best-
+    # effort and does not raise, so a busy admin session cannot DoS
+    # itself by saturating the audit table.
+    if scheme.lower() == "bearer":
+        try:
+            from app.core.audit_log import record_auth_event
+
+            payload_local = locals().get("payload")
+            if payload_local and payload_local.get("type") == "impersonation":
+                await record_auth_event(
+                    "impersonation_request",
+                    target_user_id=user.id,
+                    request=request,
+                    payload={
+                        "actor": "admin",
+                        "method": request.method,
+                        "path": request.url.path,
+                    },
+                )
+        except Exception:  # pragma: no cover - defensive
+            pass
     return user
