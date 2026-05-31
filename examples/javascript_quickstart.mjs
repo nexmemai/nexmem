@@ -80,7 +80,9 @@ async function bootstrapApiKey(baseUrl, email, password) {
   banner(2, "Log in (get short-lived JWT)");
   const login = await postJson(baseUrl, "/api/v1/auth/login", { email, password });
   const accessToken = login.access_token;
-  console.log(`access_token received (length=${accessToken.length})`);
+  // Do not log the token or its length — CodeQL flags any sensitive
+  // value reaching a logging sink as clear-text logging.
+  console.log("access_token received [REDACTED — do not log in production]");
 
   banner(3, "Create API key (returned once, prefix nxm_)");
   const keyData = await postJson(
@@ -91,9 +93,10 @@ async function bootstrapApiKey(baseUrl, email, password) {
   );
   const rawKey = keyData.api_key;
   if (!rawKey.startsWith("nxm_")) {
-    throw new Error(`unexpected API key prefix from backend: ${rawKey.slice(0, 4)}`);
+    // Report only a static message; never echo any portion of the key.
+    throw new Error("unexpected API key prefix from backend (expected nxm_)");
   }
-  console.log(`api_key created (prefix nxm_, length=${rawKey.length})`);
+  console.log("api_key created (prefix nxm_) [REDACTED — do not log in production]");
   return rawKey;
 }
 

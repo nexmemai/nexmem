@@ -68,7 +68,7 @@ async def bootstrap_api_key(base_url: str, email: str, password: str) -> str:
             json={"email": email, "password": password},
         )
         if resp.status_code not in (200, 201):
-            print(f"register failed: {resp.status_code} {resp.text}")
+            print(f"register failed: status {resp.status_code}")
             resp.raise_for_status()
         print(f"registered {email}")
 
@@ -79,8 +79,9 @@ async def bootstrap_api_key(base_url: str, email: str, password: str) -> str:
         )
         resp.raise_for_status()
         access_token = resp.json()["access_token"]
-        # Show the token shape only — never the token itself.
-        print(f"access_token received (length={len(access_token)})")
+        # Never log the token or its length — CodeQL flags any sensitive
+        # value reaching a logging sink as clear-text logging.
+        print("access_token received [REDACTED — do not log in production]")
 
         banner(3, "Create API key (returned once, prefix nxm_)")
         resp = await http.post(
@@ -91,10 +92,11 @@ async def bootstrap_api_key(base_url: str, email: str, password: str) -> str:
         resp.raise_for_status()
         raw_key: str = resp.json()["api_key"]
         if not raw_key.startswith("nxm_"):
+            # Report only a static message; never echo any part of the key.
             raise RuntimeError(
-                f"unexpected API key prefix from backend: {raw_key[:4]!r}"
+                "unexpected API key prefix from backend (expected nxm_)"
             )
-        print(f"api_key created (prefix nxm_, length={len(raw_key)})")
+        print("api_key created (prefix nxm_) [REDACTED — do not log in production]")
         return raw_key
 
 
