@@ -18,6 +18,58 @@ jobs:
       - name: Run credential scanner
         run: python scripts/scan_secrets.py --ci
 
+  # Detect docs-only pull requests so the expensive backend jobs
+  # (integration-tests, alembic-roundtrip, dependency-audit) can skip
+  # when a PR changes nothing but documentation. This keeps docs PRs
+  # fast WITHOUT weakening coverage for any PR that touches real code:
+  # the moment a change lands outside the docs allowlist below, the
+  # gate flips to docs_only=false and every backend job runs again.
+  #
+  # The allowlist is intentionally narrow — top-level Markdown status
+  # docs and the docs/ tree. Anything else (app/, tests/, alembic/,
+  # requirements*.txt, .github/, Dockerfile, pyproject.toml,
+  # pytest.ini, etc.) counts as a code change. On push events
+  # (e.g. to main) the gate always reports docs_only=false so mainline
+  # behaviour is unchanged.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      docs_only: ${{ steps.classify.outputs.docs_only }}
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+      - name: Classify changed files (docs-only?)
+        id: classify
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_EVENT_NAME}" != "pull_request" ]; then
+            echo "Not a pull_request event; treating as code (docs_only=false)."
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          BASE_REF="origin/${GITHUB_BASE_REF:-main}"
+          git fetch --no-tags --depth=50 origin "${GITHUB_BASE_REF:-main}" || true
+          CHANGED=$(git diff --name-only "$BASE_REF"...HEAD || true)
+          echo "Changed files in this PR:"
+          echo "${CHANGED:-<none>}"
+          # A file is "non-docs" unless it matches the docs allowlist:
+          #   *.md at repo root  OR  anything under docs/
+          NON_DOCS=$(echo "${CHANGED}" | grep -v -E '^([^/]+\.md|docs/.*)$' || true)
+          if [ -z "${CHANGED}" ]; then
+            # No detectable diff — be safe and run the full suite.
+            echo "No changed files detected; running full CI (docs_only=false)."
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+          elif [ -z "${NON_DOCS}" ]; then
+            echo "Docs-only PR detected (docs_only=true)."
+            echo "docs_only=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Non-docs changes present; running full CI (docs_only=false):"
+            echo "${NON_DOCS}"
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+          fi
+
   # P5-C6: migration safety lint. Catches DELETE FROM, raw ALTER
   # TABLE without an opt-out, and missing/empty downgrade() bodies.
   # See scripts/lint_migrations.py for the full rule set.
@@ -105,7 +157,10 @@ jobs:
         if-no-files-found: ignore
 
   integration-tests:
-    needs: lint-and-test
+    needs: [lint-and-test, changes]
+    # Skipped on docs-only PRs (see the `changes` job). Always runs for
+    # any PR touching code/tests/migrations/deps/workflows, and on pushes.
+    if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -180,7 +235,11 @@ jobs:
   # findings; ``--vulnerability-service osv`` is faster and more
   # comprehensive than the deprecated ``pyup`` source.
   dependency-audit:
-    needs: lint-and-test
+    needs: [lint-and-test, changes]
+    # Skipped on docs-only PRs (see the `changes` job); dependency CVEs
+    # cannot be introduced by a Markdown-only change. Always runs for any
+    # PR touching requirements*.txt or other code, and on pushes to main.
+    if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
@@ -203,7 +262,11 @@ jobs:
   # DDL is caught on the PR rather than during an emergency
   # rollback.
   alembic-roundtrip:
-    needs: lint-and-test
+    needs: [lint-and-test, changes]
+    # Skipped on docs-only PRs (see the `changes` job); migrations cannot
+    # change in a Markdown-only PR. Always runs for any PR touching
+    # alembic/ or other code, and on pushes to main.
+    if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     services:
       postgres:

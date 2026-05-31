@@ -25,6 +25,8 @@
   merge commit `7a02202`. CI was green enough to allow the merge (the lint-and-test
   and CodeQL blockers were resolved on tip `15fab12` before merge — see
   `FINAL_MERGE_REPORT.md`).
+- Docs-only PRs skip backend CI jobs (integration-tests, alembic-roundtrip,
+  dependency-audit); main codebase CI remains unchanged.
 - **GitHub Actions status for `main` could not be observed from this environment;
   CI is assumed green as of the merge of PR #23.** (No `gh` CLI / API access here.)
 
