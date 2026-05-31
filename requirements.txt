@@ -9,14 +9,14 @@ pgvector==0.3.0
 spacy==3.7.4
 networkx==3.3
 sentence-transformers==3.0.1
-python-jose[cryptography]==3.3.0
+python-jose[cryptography]==3.4.0
 passlib[bcrypt]==1.7.4
 # passlib 1.7.4 reads bcrypt.__about__.__version__; bcrypt 4.1+ removed it.
 # Pin to a version known to work with passlib until we migrate to argon2.
 bcrypt==4.0.1
 httpx==0.27.0
 openai==1.30.0
-python-dotenv==1.0.1
+python-dotenv==1.2.2
 numpy==1.26.4
 psycopg2-binary==2.9.9
 apscheduler>=3.10.0
@@ -27,7 +27,7 @@ tenacity==8.3.0
 asgiref==3.8.1
 structlog==24.1.0
 prometheus-fastapi-instrumentator==7.0.0
-sentry-sdk[fastapi]==2.1.1
+sentry-sdk[fastapi]==2.8.0
 email-validator==2.3.0
 # ── P3-A6: TOTP / 2FA (Block 5) ───────────────────────────────────────────────
 # pyotp: RFC 6238 TOTP code generation/verification (no native deps).
