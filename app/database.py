@@ -87,7 +87,12 @@ def _build_engine_kwargs() -> dict:
         "statement_cache_size": 0,
     }
     if not settings.demo_mode:
-        connect_args["ssl"] = "require"
+        # SSL is required for managed Postgres (Supabase/RDS). It can be
+        # turned off ONLY via ``DB_REQUIRE_SSL=false`` for a local/CI
+        # Postgres that does not speak TLS (e.g. the GitHub Actions service
+        # container). Default stays secure (require).
+        if settings.db_require_ssl:
+            connect_args["ssl"] = "require"
         # P5-C1: kill any statement that runs longer than the configured
         # timeout (30s default), and any transaction that goes idle for
         # longer than ``idle_in_transaction_session_timeout`` (60s default).
