@@ -32,6 +32,27 @@
 - **GitHub Actions status for `main` could not be observed from this environment;
   CI is assumed green as of the merge of PR #23.** (No `gh` CLI / API access here.)
 
+## Section 3b — PR #24 (docs/post-merge-status) merge policy
+
+- PR #24 carries the CI-truth fixes: valid `dependency-audit` command, the
+  `DB_REQUIRE_SSL` toggle so `alembic-roundtrip` + `integration-tests` connect to
+  the non-TLS CI Postgres, and backend jobs running on all PRs.
+- **`dependency-audit` is expected to remain RED on PR #24.** PR #24 does not
+  change `requirements.txt`, so the 12 pre-existing CVEs (7 packages) still
+  report. This is NOT hidden or suppressed — the job runs and reports honestly.
+  The CVE remediation lives on branch `chore/dependency-cve-upgrades` (see
+  `DEPENDENCY_CVE_STATUS.md`).
+- **Merge decision: BLOCKED pending policy confirmation.** Whether
+  `dependency-audit` is a *required* status check is configured in GitHub
+  branch-protection settings, which cannot be read from this environment (no
+  `gh` / API; no CODEOWNERS or branch-protection-as-code in the repo).
+  - If `dependency-audit` IS a required check → **do NOT merge PR #24** until the
+    dependency PR lands (or the two are combined).
+  - If `dependency-audit` is NON-blocking → PR #24 may be merged with the red
+    `dependency-audit` documented here as a known, tracked exception.
+- This file does not claim PR #24 is fully green; one security check is red by
+  design until the dependency PR merges.
+
 ## Section 4 — Operator / Deployment TODOs
 
 Human-only actions before real beta traffic (per `FINAL_MERGE_REPORT.md` and
