@@ -23,7 +23,20 @@ Listed honestly rather than force-bumped.
 | starlette | 0.38.6 | 0.47.2+ (CVE-2025-54121) / 0.40.0 | **transitive via fastapi==0.115.0** (pins starlette <0.42). Requires a FastAPI major bump + full app retest. |
 | protobuf | 4.25.9 | 5.29.6 | transitive via the ML stack (sentence-transformers/transformers). Bumping risks the ML pipeline; needs ML-path retest. |
 | transformers | 4.57.6 | 5.0.0rc3 (one advisory has no stable fix) | major (5.x is a pre-release); transitive via sentence-transformers. Needs ML retest. |
+| pyasn1 | 0.4.8 | 0.6.3 (GHSA-jr27-m4p2-rc6r) | **blocked by python-jose 3.4.0**, which pins `pyasn1<0.5.0,>=0.4.1`. A clean resolve REJECTS pyasn1 0.6.3 (verified: ResolutionImpossible). Clears only when python-jose allows newer pyasn1, or when we migrate off python-jose to pyjwt (BACKEND_RISKS.md P3 item). Surfaced by the python-jose 3.3.0→3.4.0 bump. |
 | ecdsa | 0.19.2 | (no fix released) | transitive via python-jose[cryptography]; GHSA-wj6h-64fc-37mp has no upstream fix. Mitigation: prefer the cryptography backend; revisit when a fix ships. |
+
+## Audit results
+
+| Run | Vulnerabilities | Packages |
+|---|---|---|
+| Before (main @ 7a02202) | 12 | 7 (python-jose, python-dotenv, sentry-sdk, protobuf, starlette, transformers, ecdsa) |
+| After this branch's 3 bumps | **8** | **5** (protobuf, pyasn1, starlette, transformers, ecdsa) |
+
+- **5 CVEs resolved:** python-jose ×3 (PYSEC-2024-232/233 + one more), python-dotenv ×1, sentry-sdk ×1.
+- **8 remain** across the 5 deferred packages above — all transitive / framework-gated, documented for a follow-up FastAPI + ML-stack upgrade PR.
+- `dependency-audit` will therefore still exit non-zero on this branch until
+  those framework upgrades land. This is honest and expected, not suppressed.
 
 ## Verification required on this branch before merge
 
