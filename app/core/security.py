@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import secrets
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Tuple, Union
 
 from jose import jwt
@@ -57,7 +57,7 @@ def create_access_token(
     # cutoff (e.g. a legitimate re-login) authenticate normally.
     to_encode = {
         "exp": expire,
-        "iat": int(datetime.utcnow().timestamp()),
+        "iat": int(datetime.now(timezone.utc).timestamp()),
         "sub": str(subject),
         "type": "access",
         "jti": secrets.token_hex(16),
@@ -312,7 +312,7 @@ def create_impersonation_token(target_user_id: str) -> str:
         "type": IMPERSONATION_TOKEN_TYPE,
         "actor": "admin",
         "exp": expire,
-        "iat": int(now.timestamp()),
+        "iat": int(datetime.now(timezone.utc).timestamp()),
         "jti": secrets.token_hex(16),
     }
     return jwt.encode(payload, settings.secret_key, algorithm=ALGORITHM)

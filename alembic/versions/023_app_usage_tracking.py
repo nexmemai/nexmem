@@ -125,8 +125,8 @@ def upgrade() -> None:
     )
 
     # RLS posture mirrors every other user-scoped table.
-    op.execute("ALTER TABLE app_usage ENABLE ROW LEVEL SECURITY")
-    op.execute("ALTER TABLE app_usage FORCE ROW LEVEL SECURITY")
+    op.execute("ALTER TABLE app_usage ENABLE ROW LEVEL SECURITY")  # lint: raw-alter-ok
+    op.execute("ALTER TABLE app_usage FORCE ROW LEVEL SECURITY")  # lint: raw-alter-ok
     op.execute("DROP POLICY IF EXISTS app_usage_user_isolation ON app_usage")
     op.execute(
         f"""
@@ -141,7 +141,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.execute("DROP POLICY IF EXISTS app_usage_user_isolation ON app_usage")
-    op.execute("ALTER TABLE app_usage NO FORCE ROW LEVEL SECURITY")
-    op.execute("ALTER TABLE app_usage DISABLE ROW LEVEL SECURITY")
+    op.execute("ALTER TABLE app_usage NO FORCE ROW LEVEL SECURITY")  # lint: raw-alter-ok
+    op.execute("ALTER TABLE app_usage DISABLE ROW LEVEL SECURITY")  # lint: raw-alter-ok
     op.drop_index("ix_app_usage_user_month", table_name="app_usage")
-    op.drop_table("app_usage")
+    op.drop_table("app_usage")  # lint: drop-table-ok
