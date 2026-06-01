@@ -205,10 +205,11 @@ jobs:
       - name: Install pip-audit
         run: pip install pip-audit==2.7.3
       - name: Run pip-audit on production deps
-        # ``-r requirements.txt`` runs against the pinned production
-        # set, NOT the dev tools. A finding here is what would ship
-        # to a customer.
-        run: pip-audit -r requirements.txt --disable-pip --vulnerability-service osv
+        # ``-r requirements.txt`` audits the pinned production set,
+        # NOT the dev tools. ``--no-deps`` skips pip's resolver so
+        # only the packages listed in requirements.txt are checked
+        # (compatible with --disable-pip being absent).
+        run: pip-audit -r requirements.txt --no-deps --vulnerability-service osv
 
   # P5-C5: Alembic forward+back round-trip. Runs every migration
   # ``upgrade head -> downgrade base -> upgrade head`` against a

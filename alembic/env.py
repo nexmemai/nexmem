@@ -53,10 +53,15 @@ def _resolve_database_url() -> str:
     elif raw.startswith("postgresql://") and "+psycopg2" not in raw:
         raw = raw.replace("postgresql://", "postgresql+psycopg2://", 1)
 
-    # Force sslmode=require for psycopg2 (managed Postgres requires TLS).
-    raw = re.sub(r"([?&])ssl[^=]*=[^&]*", "", raw, flags=re.I)
+    # SSL mode: default to require (managed Postgres), but honour
+    # DB_REQUIRE_SSL=false for CI environments where the Postgres
+    # container has no SSL configured.
+    require_ssl = os.getenv("DB_REQUIRE_SSL", "true").strip().lower() not in ("false", "0", "no")
+    sslmode = "require" if require_ssl else "disable"
+    raw = re.sub(r"([?&])sslmode=[^&]*", "", raw, flags=re.I)
+    raw = re.sub(r"([?&])ssl=[^&]*", "", raw, flags=re.I)
     raw = raw.replace("&&", "&").replace("?&", "?").rstrip("?&")
-    raw += "&sslmode=require" if "?" in raw else "?sslmode=require"
+    raw += ("&sslmode=" + sslmode) if "?" in raw else ("?sslmode=" + sslmode)
     return raw
 
 
