@@ -50,14 +50,14 @@ async def test_expired_access_token_is_rejected(client: AsyncClient):
     assert r.status_code == 401, r.text
 
 
-async def test_jwt_with_alg_none_is_rejected(client: AsyncClient):
-    """A token signed with alg=none must not authenticate."""
+async def test_jwt_with_wrong_key_is_rejected(client: AsyncClient):
+    """A token signed with the wrong secret must not authenticate."""
     fake_user = str(uuid.uuid4())
-    # Manually craft an unsigned token (alg=none is not a real signature).
+    # Forge a token with a different key than the app uses.
     forged = jwt.encode(
         {"sub": fake_user, "type": "access"},
-        key="",
-        algorithm="HS256",  # forged with empty key; never our real secret
+        key="wrong-secret-key",
+        algorithm="HS256",
     )
     r = await client.get(
         "/api/v1/auth/me", headers={"Authorization": f"Bearer {forged}"}
