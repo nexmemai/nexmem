@@ -16,7 +16,6 @@ Constraints added:
 * ``ProceduralMemory.settings``        -> object only (or NULL).
 * ``ProceduralMemory.workflows``       -> array only (or NULL).
 * ``EpisodicMemory.metadata``          -> object only (or NULL).
-* ``EpisodicMemory.tags``               -> array only (or NULL).
 * ``SemanticMemory.metadata``          -> object only (or NULL).
 * ``KnowledgeNode.properties``         -> object only (or NULL).
 * ``KnowledgeEdge.extra_metadata``     -> object only (or NULL).
@@ -52,7 +51,6 @@ _CONSTRAINTS: tuple[tuple[str, str, str], ...] = (
     ("procedural_memory", "settings", "object"),
     ("procedural_memory", "workflows", "array"),
     ("episodic_memory", "metadata", "object"),
-    ("episodic_memory", "tags", "array"),
     ("semantic_memory", "metadata", "object"),
     ("knowledge_nodes", "properties", "object"),
     ("knowledge_edges", "extra_metadata", "object"),
