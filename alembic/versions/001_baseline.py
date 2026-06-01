@@ -6,7 +6,6 @@ Create Date: 2026-04-27
 """
 
 from alembic import op
-import sqlalchemy as sa
 from pathlib import Path
 from typing import Sequence, Union
 
@@ -57,5 +56,40 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """Leave destructive base-schema teardown as a manual operation."""
-    pass
+    """
+    Tear down the base schema created by the two Supabase SQL files.
+
+    Intended for CI round-trip tests (alembic downgrade base) and local
+    developer resets. In a real Supabase / production environment this
+    migration is never run via Alembic — schema teardown there is a
+    manual, operator-controlled operation.
+
+    Drop order is the reverse of creation order so foreign-key
+    constraints are satisfied:
+      views / functions first (no FK deps, but reference tables)
+      api_keys  (FK → users)
+      engrams   (no FK to base tables)
+      knowledge_edges  (FK → knowledge_nodes × 2)
+      knowledge_nodes
+      semantic_memory  (FK → episodic_memory)
+      procedural_memory
+      episodic_memory
+      users
+    Extensions (vector, uuid-ossp, pg_trgm) are left in place — they
+    are cluster-level objects and removing them could break other
+    databases on the same Postgres instance.
+    """
+    # Views and functions that reference the tables must go first.
+    op.execute("DROP VIEW IF EXISTS recent_memories")
+    op.execute("DROP VIEW IF EXISTS memory_stats")
+    op.execute("DROP FUNCTION IF EXISTS cleanup_expired_episodic_memory()")
+
+    # Tables in reverse FK dependency order.
+    op.execute("DROP TABLE IF EXISTS api_keys")
+    op.execute("DROP TABLE IF EXISTS engrams")
+    op.execute("DROP TABLE IF EXISTS knowledge_edges")
+    op.execute("DROP TABLE IF EXISTS knowledge_nodes")
+    op.execute("DROP TABLE IF EXISTS semantic_memory")
+    op.execute("DROP TABLE IF EXISTS procedural_memory")
+    op.execute("DROP TABLE IF EXISTS episodic_memory")
+    op.execute("DROP TABLE IF EXISTS users")
