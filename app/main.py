@@ -29,7 +29,7 @@ from app.database import (
 )
 from app.models.user import User
 from fastapi.middleware.cors import CORSMiddleware
-from jose import JWTError
+from jwt.exceptions import InvalidTokenError as JWTError
 import time
 import logging
 import uuid
