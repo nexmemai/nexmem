@@ -145,6 +145,18 @@ jobs:
           pip install -r requirements.txt
           pip install -r requirements-dev.txt
 
+      - name: Apply database schema
+        env:
+          DEMO_MODE: "false"
+          DATABASE_URL: "postgresql+asyncpg://postgres:postgres@localhost:5432/nexmem_test"
+          SECRET_KEY: "ci-integration-secret-key-at-least-32-characters-long-x"
+          OPENAI_API_KEY: "sk-test-placeholder"
+          ALLOWED_ORIGINS: "http://localhost:3000"
+          ENVIRONMENT: "development"
+          DB_REQUIRE_SSL: "false"
+        run: |
+          alembic upgrade head
+
       - name: Run integration tests
         env:
           # Integration tests speak to the service containers above.
@@ -156,6 +168,7 @@ jobs:
           ALLOWED_ORIGINS: "http://localhost:3000"
           ENVIRONMENT: "development"
           RUN_DB_TESTS: "1"
+          DB_REQUIRE_SSL: "false"
         run: |
           pytest -v --tb=short -m integration
 
@@ -239,6 +252,7 @@ jobs:
           OPENAI_API_KEY: "sk-test-placeholder"
           ALLOWED_ORIGINS: "http://localhost:3000"
           ENVIRONMENT: "development"
+          DB_REQUIRE_SSL: "false"
         run: |
           # Forward.
           alembic upgrade head
