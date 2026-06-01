@@ -1,9 +1,10 @@
-# MERGE READY — PR #23 (chore/p12-sdk-publish → main)
+# MERGE READY — PR #23 (chore/p12-sdk-publish → main) — MERGED ✅
 
 - Date/time: 2026-05-31
-- Tip SHA: `559571c` (will be `<this commit>` once MERGE_READY.md is committed)
-- Branch: `chore/p12-sdk-publish`
-- `origin/main`: `c2f9212` (NOT merged — correct; pending GitHub Actions green)
+- PR #23: **MERGED** into `main`
+- `main` tip after merge: `7a02202` (Merge pull request #23 …)
+- Hardening tip merged: `15fab12`
+- Branch: `chore/p12-sdk-publish` (merged), docs refreshed from `main`
 
 ## Final local verification results
 
@@ -26,19 +27,15 @@ No reformatting was done (out of scope: no new work). The CI-blocking gate is cl
 
 ## Merge readiness
 
-**PR #23 is merge-ready pending GitHub Actions CI confirmation.**
+**PR #23 is MERGED into `main` (tip `7a02202`).** The pre-merge checks above
+passed; post-merge verification on `main` re-confirmed: app imports OK,
+scanner clean, 264 passed / 0 failed, flake8 blocking gate 0.
 
-The merge into `main` is verified conflict-free locally
-(`git merge-tree origin/main origin/chore/p12-sdk-publish` → no conflicts).
-CI status itself cannot be observed from this workspace (no `gh` CLI / API),
-so the final green confirmation + merge must happen in GitHub.
+## Operator steps remaining (post-merge)
 
-## Operator steps to finish (2)
-
-1. **Confirm GitHub Actions is green on PR #23, then merge via the UI**
-   (use a merge commit, not squash/rebase, to preserve the cumulative history).
-2. **Close PRs #1–#22 as superseded** — their content is cumulative in #23.
+1. **Close PRs #1–#22 as superseded** — their content is cumulative in #23.
    The exact `gh pr close` batch command is in `FINAL_MERGE_REPORT.md`.
+2. Complete the deployment gates below before real beta traffic.
 
 ## Post-merge deployment gates (before real beta traffic)
 

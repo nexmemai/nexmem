@@ -222,6 +222,16 @@ class Settings(BaseSettings):
     # the connection unexpectedly" error from a stale connection.
     db_pool_recycle: int = 3600
 
+    # ── TLS to the database (P5-C1 companion) ──────────────────────────────────
+    # Managed Postgres (Supabase, RDS, etc.) requires TLS, so the default is
+    # True and production keeps SSL on. Set ``DB_REQUIRE_SSL=false`` ONLY for
+    # a local / CI Postgres that does not speak TLS (e.g. the GitHub Actions
+    # ``postgres`` service container, which rejects SSL). This flag never
+    # weakens production: it must be explicitly set to false, and the default
+    # path still demands ``ssl=require``. Consumed by app/database.py (asyncpg
+    # ``connect_args["ssl"]``) and alembic/env.py (psycopg2 ``sslmode``).
+    db_require_ssl: bool = True
+
     # ── Celery hardening (P6-D1 / D2 / D3 / D4 / D5) ───────────────────────────
     # ``celery_task_soft_time_limit`` raises ``SoftTimeLimitExceeded`` inside
     #   the task so the task can clean up. ``celery_task_time_limit`` is the

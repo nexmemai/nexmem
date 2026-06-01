@@ -156,6 +156,10 @@ jobs:
           ALLOWED_ORIGINS: "http://localhost:3000"
           ENVIRONMENT: "development"
           RUN_DB_TESTS: "1"
+          # The GitHub service Postgres does not speak TLS; disable the
+          # otherwise-default ssl=require so asyncpg can connect. Production
+          # leaves this unset (defaults to true) and keeps SSL on.
+          DB_REQUIRE_SSL: "false"
         run: |
           pytest -v --tb=short -m integration
 
@@ -195,7 +199,14 @@ jobs:
         # ``-r requirements.txt`` runs against the pinned production
         # set, NOT the dev tools. A finding here is what would ship
         # to a customer.
-        run: pip-audit -r requirements.txt --disable-pip --vulnerability-service osv
+        #
+        # We do NOT pass ``--disable-pip``: in pip-audit 2.7.3 that flag
+        # requires either a fully hashed requirements file or ``--no-deps``,
+        # and ``--no-deps`` additionally rejects any non-exact pin
+        # (requirements.txt has ``apscheduler>=3.10.0``). The plain
+        # resolving form is valid for this file and audits the full
+        # production dependency closure.
+        run: pip-audit -r requirements.txt --vulnerability-service osv
 
   # P5-C5: Alembic forward+back round-trip. Runs every migration
   # ``upgrade head -> downgrade base -> upgrade head`` against a
@@ -239,6 +250,10 @@ jobs:
           OPENAI_API_KEY: "sk-test-placeholder"
           ALLOWED_ORIGINS: "http://localhost:3000"
           ENVIRONMENT: "development"
+          # The GitHub service Postgres does not speak TLS; disable the
+          # otherwise-default sslmode=require so psycopg2 can connect.
+          # Production leaves this unset (defaults to true), keeping SSL on.
+          DB_REQUIRE_SSL: "false"
         run: |
           # Forward.
           alembic upgrade head
