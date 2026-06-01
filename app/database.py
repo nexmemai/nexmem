@@ -86,7 +86,7 @@ def _build_engine_kwargs() -> dict:
         "prepared_statement_cache_size": 0,
         "statement_cache_size": 0,
     }
-    if not settings.demo_mode:
+    if not settings.demo_mode and settings.db_require_ssl:
         connect_args["ssl"] = "require"
         # P5-C1: kill any statement that runs longer than the configured
         # timeout (30s default), and any transaction that goes idle for

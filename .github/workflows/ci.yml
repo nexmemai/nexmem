@@ -145,6 +145,18 @@ jobs:
           pip install -r requirements.txt
           pip install -r requirements-dev.txt
 
+      - name: Apply database schema
+        env:
+          DEMO_MODE: "false"
+          DATABASE_URL: "postgresql+asyncpg://postgres:postgres@localhost:5432/nexmem_test"
+          SECRET_KEY: "ci-integration-secret-key-at-least-32-characters-long-x"
+          OPENAI_API_KEY: "sk-test-placeholder"
+          ALLOWED_ORIGINS: "http://localhost:3000"
+          ENVIRONMENT: "development"
+          DB_REQUIRE_SSL: "false"
+        run: |
+          alembic upgrade head
+
       - name: Run integration tests
         env:
           # Integration tests speak to the service containers above.
@@ -156,6 +168,7 @@ jobs:
           ALLOWED_ORIGINS: "http://localhost:3000"
           ENVIRONMENT: "development"
           RUN_DB_TESTS: "1"
+          DB_REQUIRE_SSL: "false"
         run: |
           pytest -v --tb=short -m integration
 
@@ -192,10 +205,11 @@ jobs:
       - name: Install pip-audit
         run: pip install pip-audit==2.7.3
       - name: Run pip-audit on production deps
-        # ``-r requirements.txt`` runs against the pinned production
-        # set, NOT the dev tools. A finding here is what would ship
-        # to a customer.
-        run: pip-audit -r requirements.txt --disable-pip --vulnerability-service osv
+        # ``-r requirements.txt`` audits the pinned production set,
+        # NOT the dev tools. ``--no-deps`` skips pip's resolver so
+        # only the packages listed in requirements.txt are checked
+        # (compatible with --disable-pip being absent).
+        run: pip-audit -r requirements.txt --no-deps --vulnerability-service osv
 
   # P5-C5: Alembic forward+back round-trip. Runs every migration
   # ``upgrade head -> downgrade base -> upgrade head`` against a
@@ -239,6 +253,7 @@ jobs:
           OPENAI_API_KEY: "sk-test-placeholder"
           ALLOWED_ORIGINS: "http://localhost:3000"
           ENVIRONMENT: "development"
+          DB_REQUIRE_SSL: "false"
         run: |
           # Forward.
           alembic upgrade head

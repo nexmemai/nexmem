@@ -16,7 +16,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any, Tuple, Union
 
-from jose import jwt
+import jwt
 from passlib.context import CryptContext
 
 from app.config import settings
@@ -96,7 +96,7 @@ def decode_token(token: str) -> dict:
     """Decode and verify a JWT.
 
     Whitelists ``HS256`` so a token signed with ``alg=none`` cannot be
-    accepted. Raises ``jose.JWTError`` on any failure (signature,
+    accepted. Raises ``jwt.exceptions.InvalidTokenError`` on any failure (signature,
     expiry, malformed). The caller turns that into HTTP 401.
 
     P3-A5: after signature + expiry validation succeed, the ``jti``
@@ -117,9 +117,7 @@ def decode_token(token: str) -> dict:
         )
 
         if is_revoked(payload.get("jti")):
-            from jose.exceptions import JWTError
-
-            raise JWTError("access token revoked")
+            raise jwt.exceptions.InvalidTokenError("access token revoked")
         # P11-I3 (Block 6): user-level force-logout cutoff. An admin
         # who hits POST /admin/users/{id}/force-logout sets a Redis
         # cutoff at ``now()``; every access token whose ``iat`` claim
@@ -134,9 +132,7 @@ def decode_token(token: str) -> dict:
         if sub and iat is not None:
             cutoff = get_user_revocation_cutoff(str(sub))
             if cutoff is not None and int(iat) < int(cutoff):
-                from jose.exceptions import JWTError
-
-                raise JWTError("user access tokens force-logged-out")
+                raise jwt.exceptions.InvalidTokenError("user access tokens force-logged-out")
     return payload
 
 
@@ -265,7 +261,7 @@ def create_totp_session_token(user_id: str) -> str:
 def decode_totp_session_token(token: str) -> dict:
     """Decode a TOTP session token and verify its scope.
 
-    Raises ``jose.JWTError`` (matching ``decode_token``'s contract)
+    Raises ``jwt.exceptions.InvalidTokenError`` (matching ``decode_token``'s contract)
     on signature failure, expiry, or wrong scope. The /auth/totp/
     complete-login route turns that into HTTP 401.
     """
@@ -273,13 +269,9 @@ def decode_totp_session_token(token: str) -> dict:
         token, settings.secret_key, algorithms=ALLOWED_ALGORITHMS
     )
     if payload.get("type") != TOTP_PENDING_TOKEN_TYPE:
-        from jose.exceptions import JWTError
-
-        raise JWTError("not a totp_pending token")
+        raise jwt.exceptions.InvalidTokenError("not a totp_pending token")
     if payload.get("scope") != TOTP_PENDING_TOKEN_TYPE:
-        from jose.exceptions import JWTError
-
-        raise JWTError("totp_pending scope missing")
+        raise jwt.exceptions.InvalidTokenError("totp_pending scope missing")
     return payload
 
 
