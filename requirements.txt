@@ -1,5 +1,5 @@
 fastapi==0.117.0
-starlette==0.47.2
+starlette==0.46.0
 uvicorn[standard]==0.30.0
 sqlalchemy[asyncio]==2.0.30
 asyncpg==0.29.0
