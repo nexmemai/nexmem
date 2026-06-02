@@ -157,6 +157,13 @@ jobs:
         run: |
           alembic upgrade head
 
+      - name: Diagnostic - List Tables
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -h localhost -U postgres -d nexmem_test -c "\dt"
+          psql -h localhost -U postgres -d nexmem_test -c "\d users" || true
+
       - name: Run integration tests
         env:
           # Integration tests speak to the service containers above.
