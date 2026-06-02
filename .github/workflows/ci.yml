@@ -153,6 +153,7 @@ jobs:
           OPENAI_API_KEY: "sk-test-placeholder"
           ALLOWED_ORIGINS: "http://localhost:3000"
           ENVIRONMENT: "development"
+          DB_REQUIRE_SSL: "false"
         run: |
           alembic upgrade head
 

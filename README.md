@@ -1,9 +1,7 @@
-# NexMem — Persistent AI Memory Layer
+# NexMem - Decentralized AI Memory Layer
 
-A persistent, cross-platform memory system for AI agents and LLMs.
-NexMem models memory like human cognition — episodic, semantic,
-procedural, and associative — and exposes it through a hardened FastAPI
-backend with JWT + API-key auth, Row-Level Security, rate limiting, and
+A persistent, cross-platform memory system for AI agents and LLMs, structured like human cognition into 4 memory types.
+
 multi-app scoping.
 
 > **Status:** pre-1.0 private beta · deployed on Render · schema
