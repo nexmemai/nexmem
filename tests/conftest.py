@@ -65,6 +65,10 @@ def reset_demo_stores():
     from app.core import audit_log as _audit_log_module
     from app.core import brute_force as _brute_force_module
     from app.core.rate_limit import limiter as _slowapi_limiter
+    
+    # Disable rate limiting for the test suite to bypass a known incompatibility
+    # between slowapi 0.1.9 and httpx.ASGITransport's response objects.
+    _slowapi_limiter.enabled = False
 
     demo_db.episodic_store.clear()
     demo_db.semantic_store.clear()
