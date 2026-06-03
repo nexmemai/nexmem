@@ -13,7 +13,7 @@ from app.middleware.json_shape_guard import JsonShapeGuardMiddleware
 from app.middleware.read_only_mode import ReadOnlyModeMiddleware
 from slowapi.middleware import SlowAPIMiddleware
 from slowapi.errors import RateLimitExceeded
-from slowapi import _rate_limit_exceeded_handler
+from fastapi.responses import JSONResponse
 from app.core.logging import configure_logging
 
 import asyncio
@@ -267,6 +267,15 @@ app = FastAPI(
 )
 
 # Rate limiting middleware (60 req/min per IP by default, using Redis if available)
+# Custom handler: slowapi 0.1.9's built-in _rate_limit_exceeded_handler is
+# incompatible with starlette 0.46.0 (mutates response headers in a way that
+# fails in the ASGI transport path). A plain JSONResponse is safe and correct.
+async def _rate_limit_exceeded_handler(request, exc):  # noqa: F811
+    return JSONResponse(
+        status_code=429,
+        content={"detail": f"Rate limit exceeded: {exc.detail}"},
+    )
+
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(SlowAPIMiddleware)
