@@ -55,6 +55,19 @@ async def test_partial_write_failure_leaves_no_orphan_rows(
         return await real_execute(self, statement, *args, **kwargs)
 
     from sqlalchemy.ext.asyncio import AsyncSession
+    
+    # Mock the LLM / embedding services so we don't 502 before reaching the DB transaction
+    from app.services.embedder import embedder
+    from app.services.engram_processor import engram_processor
+    
+    async def dummy_embed(*args, **kwargs):
+        return [0.1] * 384
+        
+    async def dummy_process(*args, **kwargs):
+        return {"engram_id": "dummy_eid"}
+        
+    monkeypatch.setattr(embedder, "embed", dummy_embed)
+    monkeypatch.setattr(engram_processor, "process_async", dummy_process)
 
     real_execute = AsyncSession.execute
     monkeypatch.setattr(AsyncSession, "execute", failing_execute, raising=False)
