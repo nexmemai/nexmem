@@ -51,6 +51,7 @@ def upgrade() -> None:
     # so a packaging that omits the supabase/ tree (it is not part of the
     # runtime image) still upgrades cleanly against an existing database.
     for sql_path in _BASE_SCHEMA_SQL:
+        print(f"DEBUG: sql_path={sql_path} is_file={sql_path.is_file()}", flush=True)
         if sql_path.is_file():
             op.execute(sql_path.read_text(encoding="utf-8"))
 
