@@ -66,8 +66,8 @@ async def test_partial_write_failure_leaves_no_orphan_rows(
     async def dummy_process(*args, **kwargs):
         return {"engram_id": "dummy_eid"}
         
-    monkeypatch.setattr(embedder, "embed", dummy_embed)
-    monkeypatch.setattr(engram_processor, "process_async", dummy_process)
+    monkeypatch.setattr("app.routers.memory.embedder.embed", dummy_embed)
+    monkeypatch.setattr("app.routers.memory.engram_processor.process_async", dummy_process)
 
     real_execute = AsyncSession.execute
     monkeypatch.setattr(AsyncSession, "execute", failing_execute, raising=False)
