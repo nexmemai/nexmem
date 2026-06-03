@@ -119,8 +119,13 @@ def run_migrations_online() -> None:
             context.configure(connection=connection, target_metadata=target_metadata)
             with context.begin_transaction():
                 context.run_migrations()
+            # The advisory lock query started a transaction on this connection.
+            # Alembic detects the active transaction and skips its own commit.
+            # We must explicitly commit the connection here to persist the schema.
+            connection.commit()
         finally:
             connection.exec_driver_sql(f"SELECT pg_advisory_unlock({LOCK_ID})")
+            connection.commit()
 
 
 if context.is_offline_mode():
