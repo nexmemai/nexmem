@@ -69,11 +69,20 @@ CREATE TABLE IF NOT EXISTS semantic_memory (
     PRIMARY KEY (id)
 );
 
--- IVFFlat index for approximate nearest-neighbor search
--- lists = 100 is a reasonable default for <1M rows; adjust as needed
-CREATE INDEX IF NOT EXISTS idx_semantic_vector
-    ON semantic_memory USING ivfflat (vector vector_cosine_ops)
-    WITH (lists = 100);
+-- IVFFlat index for approximate nearest-neighbor search.
+-- Wrapped in a DO block because IVFFlat cannot be created on an empty
+-- table (pgvector raises "ERROR: IVFFlat index requires at least 1 row").
+-- Migration 002_hnsw_index drops this index and replaces it with HNSW,
+-- so a no-op here is perfectly safe on a fresh database.
+DO $ivf$
+BEGIN
+    CREATE INDEX IF NOT EXISTS idx_semantic_vector
+        ON semantic_memory USING ivfflat (vector vector_cosine_ops)
+        WITH (lists = 100);
+EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE 'Skipping IVFFlat index on empty table: %', SQLERRM;
+END;
+$ivf$;
 
 CREATE INDEX IF NOT EXISTS idx_semantic_user_id
     ON semantic_memory (user_id);
