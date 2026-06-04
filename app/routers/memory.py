@@ -360,7 +360,6 @@ async def write_episode(
     # ── Demo mode ────────────────────────────────────────────────────
     if settings.demo_mode:
         from app.demo_db import create_episodic, create_semantic
-        from app.services.embedder import embedder
 
         episodic_result = create_episodic(
             user_id=user_id,
@@ -413,7 +412,7 @@ async def write_episode(
         # P7-E9: log the internal cause; respond with a generic 502.
         logger.warning("Embedding precompute failed: %s", exc, exc_info=True)
         raise HTTPException(
-            status_code=502, detail=f"Embedding service unavailable: {repr(exc)}"
+            status_code=502, detail="Embedding service unavailable"
         )
     embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
 

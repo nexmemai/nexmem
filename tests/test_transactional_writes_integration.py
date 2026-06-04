@@ -62,8 +62,8 @@ async def test_partial_write_failure_leaves_no_orphan_rows(
     async def dummy_process(*args, **kwargs):
         return {"engram_id": "dummy_eid"}
         
-    monkeypatch.setattr(memory_router.embedder.__class__, "embed", dummy_embed)
-    monkeypatch.setattr(memory_router.engram_processor.__class__, "process_async", dummy_process)
+    monkeypatch.setattr(memory_router.embedder, "embed", dummy_embed)
+    monkeypatch.setattr(memory_router.engram_processor, "process_async", dummy_process)
 
     from sqlalchemy.ext.asyncio import AsyncSession
     real_execute = AsyncSession.execute
