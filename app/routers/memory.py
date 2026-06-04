@@ -413,7 +413,7 @@ async def write_episode(
         # P7-E9: log the internal cause; respond with a generic 502.
         logger.warning("Embedding precompute failed: %s", exc, exc_info=True)
         raise HTTPException(
-            status_code=502, detail="Embedding service unavailable"
+            status_code=502, detail=f"Embedding service unavailable: {repr(exc)}"
         )
     embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
 
