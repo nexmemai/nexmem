@@ -54,8 +54,18 @@ async def test_partial_write_failure_leaves_no_orphan_rows(
             raise RuntimeError("forced engram insert failure")
         return await real_execute(self, statement, *args, **kwargs)
 
-    from sqlalchemy.ext.asyncio import AsyncSession
+    from app.routers import memory as memory_router
+    
+    async def dummy_embed(*args, **kwargs):
+        return [0.1] * 384
+        
+    async def dummy_process(*args, **kwargs):
+        return {"engram_id": "dummy_eid"}
+        
+    monkeypatch.setattr(memory_router.embedder, "embed", dummy_embed)
+    monkeypatch.setattr(memory_router.engram_processor, "process_async", dummy_process)
 
+    from sqlalchemy.ext.asyncio import AsyncSession
     real_execute = AsyncSession.execute
     monkeypatch.setattr(AsyncSession, "execute", failing_execute, raising=False)
 

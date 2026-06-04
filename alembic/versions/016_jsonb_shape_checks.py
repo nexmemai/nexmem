@@ -16,15 +16,24 @@ Constraints added:
 * ``ProceduralMemory.settings``        -> object only (or NULL).
 * ``ProceduralMemory.workflows``       -> array only (or NULL).
 * ``EpisodicMemory.metadata``          -> object only (or NULL).
-* ``EpisodicMemory.tags``               -> array only (or NULL).
 * ``SemanticMemory.metadata``          -> object only (or NULL).
 * ``KnowledgeNode.properties``         -> object only (or NULL).
-* ``KnowledgeEdge.extra_metadata``     -> object only (or NULL).
 * ``Engram.salience_scores``           -> object only.
 * ``Engram.entities``/``actions``/``objects``/``negated_actions``
   /``connections``                     -> array only.
 * ``GDPRAuditLog.payload`` /
   ``AuthAuditLog.payload``             -> object only.
+
+Columns intentionally excluded:
+
+* ``EpisodicMemory.tags`` — typed ``TEXT[]`` (Postgres array), not
+  JSONB. Applying ``jsonb_typeof`` to a text[] column raises a type
+  error. No shape constraint is added here.
+* ``KnowledgeEdge.extra_metadata`` — this column does not exist in
+  the schema produced by the base Supabase migrations. The edges
+  table has a ``metadata JSONB`` column instead; that column is not
+  shape-constrained here because it is used for arbitrary key/value
+  pairs with no fixed shape contract.
 
 We use ``ALTER TABLE ... ADD CONSTRAINT ... NOT VALID`` so the
 migration does not block on a full table scan, then ``VALIDATE
@@ -48,14 +57,17 @@ depends_on: Union[str, Sequence[str], None] = None
 # (table, column, kind) where kind in {"object", "array"}.
 # Setting kind="object_or_null" allows NULL to be present (most of
 # our JSONB columns are nullable).
+#
+# Excluded:
+#   episodic_memory.tags       — TEXT[] not JSONB; jsonb_typeof would error.
+#   knowledge_edges.extra_metadata — column does not exist in this schema;
+#                                    the edges table has "metadata" instead.
 _CONSTRAINTS: tuple[tuple[str, str, str], ...] = (
     ("procedural_memory", "settings", "object"),
     ("procedural_memory", "workflows", "array"),
     ("episodic_memory", "metadata", "object"),
-    ("episodic_memory", "tags", "array"),
     ("semantic_memory", "metadata", "object"),
     ("knowledge_nodes", "properties", "object"),
-    ("knowledge_edges", "extra_metadata", "object"),
     ("engrams", "salience_scores", "object"),
     ("engrams", "entities", "array"),
     ("engrams", "actions", "array"),

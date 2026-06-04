@@ -41,7 +41,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
-from jose import JWTError
+from jwt.exceptions import InvalidTokenError as JWTError
 from pydantic import BaseModel
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession

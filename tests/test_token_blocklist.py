@@ -13,7 +13,7 @@ from typing import Dict
 
 import pytest
 from httpx import AsyncClient
-from jose import JWTError
+from jwt.exceptions import InvalidTokenError as JWTError
 
 from app.config import settings
 
@@ -110,7 +110,7 @@ class TestDecodeTokenChecksBlocklist:
 
         token = create_access_token(subject=str(uuid.uuid4()))
         # Decode once to grab the jti.
-        from jose import jwt as _jwt
+        import jwt as _jwt
         from app.core.security import ALGORITHM
 
         payload = _jwt.decode(

@@ -221,6 +221,10 @@ class Settings(BaseSettings):
     # default ``idle_session_timeout`` so we never receive a "server closed
     # the connection unexpectedly" error from a stale connection.
     db_pool_recycle: int = 3600
+    # SSL mode for the database connection. Defaults to True (require SSL)
+    # in all environments. Set DB_REQUIRE_SSL=false in CI or local dev
+    # environments where the Postgres instance does not have SSL configured.
+    db_require_ssl: bool = True
 
     # ── Celery hardening (P6-D1 / D2 / D3 / D4 / D5) ───────────────────────────
     # ``celery_task_soft_time_limit`` raises ``SoftTimeLimitExceeded`` inside
