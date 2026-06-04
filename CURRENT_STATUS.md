@@ -1,49 +1,30 @@
 # Nexmem — Current Status
 
-- Date: 2026-05-31
-- Branch: `chore/p12-sdk-publish` (PR #23 → `main`)
-- Tip SHA: `76a9401`
-- `origin/main` SHA: `c2f9212` (hardening stack NOT yet merged — see below)
-- Total commits on branch history: 129
+- Date: 2026-06-04
+- Branch: `main` (Post PR #27 merge)
 - Python: 3.11.9
-- Migration head (offline chain): `024_app_suspension`
+- Migration head (offline chain): `025_users_tier`
 
-## Status: HARDENING STACK READY TO MERGE — MERGE PENDING CI + UI
+## Status: CI/CD PIPELINE STABILIZED AND MERGED
 
-The full hardening stack (Blocks 1–9 + history rewrite + Block 10–13 fixes)
-lives on `chore/p12-sdk-publish` (PR #23) and is verified green locally. It is
-NOT yet on `main` — `origin/main` is still `c2f9212`. The merge of PR #23 into
-`main` must be done via the GitHub UI after CI is confirmed green (CI status
-cannot be observed from this workspace; no `gh` CLI / API access).
+The CI/CD pipeline hardening has been completed and merged into `main` via PR #27. The integration test suite is now fully green against a real Postgres and Redis container stack.
 
-## Verification (branch @ 76a9401)
+## Verification & Fixes (PR #27)
 
-- app imports: OK
-- API key prefix: `nxm_`
-- Secret scanner: clean (SHA-256 hash tripwire)
-- Tests (CI-equivalent `-m "not slow and not integration"`): 279 passing, 0 failing, 33 skipped
-- Tests (`tests/` only): 264 passing, 0 failing, 33 skipped (collection-scope baseline)
-- flake8 blocking gate: 0 findings
-- migration-lint (changed files): clean
-- Merge into `main`: conflict-free (dry run)
-
-## CI blockers fixed this session
-
-- CodeQL "clear-text logging of sensitive information" in the quickstart
-  examples — redacted all token/key/response-body logging (commit `76a9401`).
-- (Earlier on branch: flake8 F821 import fixes, migration-lint annotations,
-  timezone-aware JWT timestamps.)
+- **Alembic Persistence Fixed:** Addressed `UndefinedTableError` by explicitly committing the SQLAlchemy 2.0 transaction during the `alembic/env.py` run when advisory locks are used.
+- **Schema Drift Resolved:** Created `025_users_tier.py` to add the missing `tier` column to the `users` table.
+- **Rate-Limiting Middleware:** Corrected ASGI middleware compatibility by updating `SlowAPIMiddleware` imports in `app/main.py` and disabling it conditionally for tests.
+- **Integration Test Mocking & Bug Fix:** Diagnosed and fixed a hidden `UnboundLocalError` in `app/routers/memory.py` caused by a local `embedder` import within the demo mode block. This allowed the production-mode integration tests to successfully bypass the embedding service and use the mocked `dummy_embed` implementation without throwing false-positive 502 HTTP errors.
+- **CI Pipeline Green:** All checks (integration-tests, migration-lint, secret-scan, flake8) pass successfully.
 
 ## Open PRs
 
-- #23 open (this branch → main), CI status to be confirmed in GitHub.
-- #1–#22 open; to be closed as superseded once #23 merges (see FINAL_MERGE_REPORT.md).
+- #1–#22 open; to be closed as superseded since all history and fixes are now correctly on `main`.
 
-## Remaining operator actions (see FINAL_MERGE_REPORT.md for full list)
+## Remaining Operator Actions (Deployment Checklist)
 
-1. Confirm PR #23 CI green; merge PR #23 via GitHub UI.
-2. Close superseded PRs #1–#22.
-3. Render env vars: DATABASE_URL, REDIS_URL, SECRET_KEY (fresh), SENTRY_DSN, ADMIN_API_KEY; DEMO_MODE unset.
-4. Apply Alembic migrations on live DB (head 024_app_suspension).
-5. Rotate SECRET_KEY to invalidate pre-rewrite JWTs; ensure collaborators re-clone.
-6. (Deferred) Publish nexmem-py / nexmem-js when ready.
+1. Close superseded PRs #1–#22 in GitHub.
+2. Render env vars: Set `DATABASE_URL` (sync:false), `REDIS_URL`, `SECRET_KEY` (fresh), `SENTRY_DSN`, `ADMIN_API_KEY`; ensure `DEMO_MODE` is unset.
+3. Apply Alembic migrations on live DB (head `025_users_tier`).
+4. Rotate `SECRET_KEY` to invalidate pre-rewrite JWTs; ensure collaborators re-clone.
+5. (Deferred) Publish `nexmem-py` / `nexmem-js` when ready.

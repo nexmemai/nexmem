@@ -32,6 +32,7 @@ authenticated identity. See `docs/APP_SCOPING.md` for the rule and
 * **Database:** PostgreSQL 16+ with `pgvector`, `pg_trgm`, and Row
   Level Security. Phase 2 extends RLS to `users`, `api_keys`,
   `refresh_tokens`, and `token_usage` (was previously memory-only).
+  Migration head is now `025_users_tier`.
 * **Cache / queue:** Redis. Used for rate limiting, brute-force
   lockout, monthly write/read quotas, and Celery broker.
 * **Background jobs:** Celery worker + beat. Used for memory
@@ -199,14 +200,14 @@ traffic.
   embedding service. Slow DB probes (>1000 ms) are flagged.
 
 ### 3.8 CI
-GitHub Actions runs three jobs per PR:
+GitHub Actions runs three jobs per PR. The pipeline has been fully hardened and integration-tested:
 1. `secret-scan` — `python scripts/scan_secrets.py --ci`. Blocks
    the merge on any pattern hit.
 2. `lint-and-test` — flake8 syntax check + pytest unit suite with
    `pytest-cov`. Coverage XML uploaded as artefact.
 3. `integration-tests` — runs `pgvector/pgvector:pg16` and
    `redis:7` service containers and executes
-   `pytest -m integration` with `RUN_DB_TESTS=1`.
+   `pytest -m integration` with `RUN_DB_TESTS=1`. Now correctly uses Alembic advisory locks for schema validation.
 4. `security-audit` — `tests/run_security_audit.py` (bandit).
 
 ---
